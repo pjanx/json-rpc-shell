@@ -1,0 +1,31 @@
+json-rpc-shell
+==============
+
+`json-rpc-shell' is a trivial shell for running JSON-RPC 2.0 HTTP queries.
+
+This software has been created as a replacement for the following shell, which
+is written in Java: http://software.dzhuvinov.com/json-rpc-2.0-shell.html
+
+Fuck Java.  With a sharp, pointy object.  In the ass.  Hard.  json-c as well.
+
+Building and Running
+--------------------
+Build dependencies: clang, pkg-config, GNU make, Jansson, cURL, readline
+
+If you don't have Clang, you can edit the Makefile to use GCC or TCC, they work
+just as good.  But there's no CMake support yet, so I force it in the Makefile.
+
+ $ git clone https://github.com/pjanouch/json-rpc-shell.git
+ $ make
+
+That is all, no installation is required, or supported for that matter.
+
+License
+-------
+`json-rpc-shell' is written by Přemysl Janouch <p.janouch@gmail.com>.
+
+You may use the software under the terms of the ISC license, the text of which
+is included within the package, or, at your option, you may relicense the work
+under the MIT or the Modified BSD License, as listed at the following site:
+
+http://www.gnu.org/licenses/license-list.html

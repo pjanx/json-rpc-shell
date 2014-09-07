@@ -1,0 +1,5 @@
+# Build files
+/json-rpc-shell
+
+# Qt Creator files
+/json-rpc-shell.*
