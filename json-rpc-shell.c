@@ -501,7 +501,7 @@ process_input (struct app_context *ctx, char *user_input)
 	// Now we go through this madness, just so that the order can be arbitrary
 	json_error_t e;
 	size_t args_len = 0;
-	json_t *args[2], *id = NULL, *params = NULL;
+	json_t *args[2] = { NULL, NULL }, *id = NULL, *params = NULL;
 
 	while (true)
 	{
@@ -514,13 +514,13 @@ process_input (struct app_context *ctx, char *user_input)
 		if (args_len == N_ELEMENTS (args))
 		{
 			print_error ("too many arguments");
-			goto fail_tokener;
+			goto fail_parse;
 		}
 		if (!(args[args_len] = json_loadb (p, len - (p - input),
 			JSON_DECODE_ANY | JSON_DISABLE_EOF_CHECK, &e)))
 		{
 			print_error ("failed to parse JSON value: %s", e.text);
-			goto fail_tokener;
+			goto fail_parse;
 		}
 		p += e.position;
 		args_len++;
@@ -528,15 +528,23 @@ process_input (struct app_context *ctx, char *user_input)
 
 	for (size_t i = 0; i < args_len; i++)
 	{
+		json_t **target;
 		if (is_valid_json_rpc_id (args[i]))
-			id = json_incref (args[i]);
+			target = &id;
 		else if (is_valid_json_rpc_params (args[i]))
-			params = json_incref (args[i]);
+			target = &params;
 		else
 		{
 			print_error ("unexpected value at index %zu", i);
-			goto fail_tokener;
+			goto fail_parse;
 		}
+
+		if (*target)
+		{
+			print_error ("cannot specify multiple `id' or `params'");
+			goto fail_parse;
+		}
+		*target = json_incref (args[i]);
 	}
 
 	if (!id && ctx->auto_id)
@@ -544,7 +552,7 @@ process_input (struct app_context *ctx, char *user_input)
 
 	make_json_rpc_call (ctx, method, id, params);
 
-fail_tokener:
+fail_parse:
 	if (id)      json_decref (id);
 	if (params)  json_decref (params);
 
