@@ -84,6 +84,7 @@ log_message (const char *quote, const char *fmt, ...)
 
 // `fatal' is reserved for unexpected failures that would harm further operation
 
+// TODO: colors (probably copy over from stracepkg)
 #define print_fatal(...)    log_message ("fatal: ",   __VA_ARGS__)
 #define print_error(...)    log_message ("error: ",   __VA_ARGS__)
 #define print_warning(...)  log_message ("warning: ", __VA_ARGS__)
@@ -351,7 +352,7 @@ parse_response (struct app_context *ctx, struct str *buf)
 		if (!s)
 			print_error ("character conversion failed for `%s'", "result");
 		else
-			printf ("result: %s\n", s);
+			printf ("%s\n", s);
 		free (s);
 	}
 
@@ -442,10 +443,11 @@ make_json_rpc_call (struct app_context *ctx,
 	bool success = false;
 	if (id)
 	{
+		// TODO: maybe also accept "...; charset=UTF-8"
 		if (!type)
 			print_warning ("missing `Content-Type' header");
-		else if (strcmp (type, "application/json"))
-			// FIXME: expect e.g. application/json; charset=UTF-8
+		else if (strcmp (type, "application/json")
+			&& strcmp (type, "application/json-rpc"))  // obsolete
 			print_warning ("unexpected `Content-Type' header: %s", type);
 
 		success = parse_response (ctx, &buf);
@@ -560,7 +562,6 @@ fail_parse:
 		json_decref (args[i]);
 fail:
 	free (input);
-	putchar ('\n');
 }
 
 static void
@@ -673,6 +674,7 @@ main (int argc, char *argv[])
 	char *encoding = nl_langinfo (CODESET);
 #ifdef __linux__
 	// XXX: not quite sure if this is actually desirable
+	// TODO: instead retry with JSON_ENSURE_ASCII
 	encoding = strdup_printf ("%s//TRANSLIT", encoding);
 #endif // __linux__
 
@@ -713,6 +715,7 @@ main (int argc, char *argv[])
 		process_input (&ctx, line);
 		free (line);
 	}
+	putchar ('\n');
 
 	char *dir = strdup (history_path);
 	(void) mkdir_with_parents (dirname (dir));
