@@ -494,6 +494,11 @@ process_input (struct app_context *ctx, char *user_input)
 	char *p = input;
 	while (*p && isspace_ascii (*p))
 		p++;
+
+	// No input
+	if (!*p)
+		goto fail;
+
 	char *method = p;
 	while (*p && !isspace_ascii (*p))
 		p++;
