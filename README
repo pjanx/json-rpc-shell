@@ -10,15 +10,16 @@ Fuck Java.  With a sharp, pointy object.  In the ass.  Hard.  json-c as well.
 
 Building and Running
 --------------------
-Build dependencies: clang, pkg-config, GNU make, Jansson, cURL, readline
-
-If you don't have Clang, you can edit the Makefile to use GCC or TCC, they work
-just as good.  But there's no CMake support yet, so I force it in the Makefile.
+Build dependencies: CMake, pkg-config, libev, Jansson, cURL, readline
 
  $ git clone https://github.com/pjanouch/json-rpc-shell.git
+ $ mkdir build
+ $ cd build
+ $ cmake .. -DCMAKE_BUILD_TYPE=Debug
  $ make
 
-That is all, no installation is required, or supported for that matter.
+Now you can run the following command to get some help about the exact usage:
+ $ ./json-rpc-shell --help
 
 License
 -------

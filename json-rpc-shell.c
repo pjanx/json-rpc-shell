@@ -40,7 +40,10 @@
 #include <iconv.h>
 #include <langinfo.h>
 #include <sys/stat.h>
+#include <signal.h>
+#include <unistd.h>
 
+#include <ev.h>
 #include <getopt.h>
 #include <readline/readline.h>
 #include <readline/history.h>
@@ -144,18 +147,6 @@ str_append_data (struct str *self, const char *data, size_t n)
 	self->str[self->len] = '\0';
 }
 
-static void
-str_append_c (struct str *self, char c)
-{
-	str_append_data (self, &c, 1);
-}
-
-static void
-str_append (struct str *self, const char *s)
-{
-	str_append_data (self, s, strlen (s));
-}
-
 // --- Utilities ---------------------------------------------------------------
 
 static char *strdup_printf (const char *format, ...) ATTRIBUTE_PRINTF (1, 2);
@@ -242,7 +233,7 @@ mkdir_with_parents (char *path)
 
 // --- Main program ------------------------------------------------------------
 
-struct app_context
+static struct app_context
 {
 	CURL *curl;                         ///< cURL handle
 	char curl_error[CURL_ERROR_SIZE];   ///< cURL error info buffer
@@ -256,7 +247,8 @@ struct app_context
 
 	iconv_t term_to_utf8;               ///< Terminal encoding to UTF-8
 	iconv_t term_from_utf8;             ///< UTF-8 to terminal encoding
-};
+}
+g_ctx;
 
 #define PARSE_FAIL(...)                                                        \
 	BLOCK_START                                                                \
@@ -570,6 +562,47 @@ fail:
 }
 
 static void
+on_winch (EV_P_ ev_signal *handle, int revents)
+{
+	(void) loop;
+	(void) handle;
+	(void) revents;
+
+	// This fucks up big time on terminals with automatic wrapping such as
+	// rxvt-unicode or newer VTE when the current line overflows, however we
+	// can't do much about that
+	rl_resize_terminal ();
+}
+
+static void
+on_readline_input (char *line)
+{
+	if (!line)
+	{
+		rl_callback_handler_remove ();
+		ev_break (EV_DEFAULT_ EVBREAK_ONE);
+		return;
+	}
+
+	if (*line)
+		add_history (line);
+
+	// Stupid readline forces us to use a global variable
+	process_input (&g_ctx, line);
+	free (line);
+}
+
+static void
+on_tty_readable (EV_P_ ev_io *handle, int revents)
+{
+	(void) loop;
+	(void) handle;
+
+	if (revents & EV_READ)
+		rl_callback_read_char ();
+}
+
+static void
 print_usage (const char *program_name)
 {
 	fprintf (stderr,
@@ -590,9 +623,6 @@ int
 main (int argc, char *argv[])
 {
 	const char *invocation_name = argv[0];
-
-	struct app_context ctx;
-	memset (&ctx, 0, sizeof ctx);
 
 	static struct option opts[] =
 	{
@@ -624,11 +654,11 @@ main (int argc, char *argv[])
 			printf (PROGRAM_NAME " " PROGRAM_VERSION "\n");
 			exit (EXIT_SUCCESS);
 
-		case 'a':  ctx.auto_id      = true;  break;
-		case 'o':  origin = optarg;          break;
-		case 'p':  ctx.pretty_print = true;  break;
-		case 't':  ctx.trust_all    = true;  break;
-		case 'v':  ctx.verbose      = true;  break;
+		case 'a':  g_ctx.auto_id      = true;  break;
+		case 'o':  origin = optarg;            break;
+		case 'p':  g_ctx.pretty_print = true;  break;
+		case 't':  g_ctx.trust_all    = true;  break;
+		case 'v':  g_ctx.verbose      = true;  break;
 
 		default:
 			print_error ("wrong options");
@@ -652,7 +682,7 @@ main (int argc, char *argv[])
 			" either `http://' or `https://'");
 
 	CURL *curl;
-	if (!(ctx.curl = curl = curl_easy_init ()))
+	if (!(g_ctx.curl = curl = curl_easy_init ()))
 		exit_fatal ("cURL initialization failed");
 
 	struct curl_slist *headers = NULL;
@@ -666,10 +696,12 @@ main (int argc, char *argv[])
 
 	if (curl_easy_setopt (curl, CURLOPT_POST,           1L)
 	 || curl_easy_setopt (curl, CURLOPT_NOPROGRESS,     1L)
-	 || curl_easy_setopt (curl, CURLOPT_ERRORBUFFER,    ctx.curl_error)
+	 || curl_easy_setopt (curl, CURLOPT_ERRORBUFFER,    g_ctx.curl_error)
 	 || curl_easy_setopt (curl, CURLOPT_HTTPHEADER,     headers)
-	 || curl_easy_setopt (curl, CURLOPT_SSL_VERIFYPEER, ctx.trust_all ? 0L : 1L)
-	 || curl_easy_setopt (curl, CURLOPT_SSL_VERIFYHOST, ctx.trust_all ? 0L : 2L)
+	 || curl_easy_setopt (curl, CURLOPT_SSL_VERIFYPEER,
+			g_ctx.trust_all ? 0L : 1L)
+	 || curl_easy_setopt (curl, CURLOPT_SSL_VERIFYHOST,
+			g_ctx.trust_all ? 0L : 2L)
 	 || curl_easy_setopt (curl, CURLOPT_URL,            endpoint))
 		exit_fatal ("cURL setup failed");
 
@@ -683,9 +715,9 @@ main (int argc, char *argv[])
 	encoding = strdup_printf ("%s//TRANSLIT", encoding);
 #endif // __linux__
 
-	if ((ctx.term_from_utf8 = iconv_open (encoding, "utf-8"))
+	if ((g_ctx.term_from_utf8 = iconv_open (encoding, "utf-8"))
 		== (iconv_t) -1
-	 || (ctx.term_to_utf8 = iconv_open ("utf-8", nl_langinfo (CODESET)))
+	 || (g_ctx.term_to_utf8 = iconv_open ("utf-8", nl_langinfo (CODESET)))
 		== (iconv_t) -1)
 		exit_fatal ("creating the UTF-8 conversion object failed: %s",
 			strerror (errno));
@@ -711,17 +743,30 @@ main (int argc, char *argv[])
 		RL_PROMPT_START_IGNORE, RL_PROMPT_END_IGNORE,
 		RL_PROMPT_START_IGNORE, RL_PROMPT_END_IGNORE);
 
-	char *line;
-	while ((line = readline (prompt)))
-	{
-		if (*line)
-			add_history (line);
+	// readline 6.3 doesn't immediately redraw the terminal upon reception
+	// of SIGWINCH, so we must run it in an event loop to remediate that
+	struct ev_loop *loop = EV_DEFAULT;
+	if (!loop)
+		exit_fatal ("libev initialization failed");
 
-		process_input (&ctx, line);
-		free (line);
-	}
+	ev_signal winch_watcher;
+	ev_io tty_watcher;
+
+	ev_signal_init (&winch_watcher, on_winch, SIGWINCH);
+	ev_signal_start (EV_DEFAULT_ &winch_watcher);
+
+	ev_io_init (&tty_watcher, on_tty_readable, STDIN_FILENO, EV_READ);
+	ev_io_start (EV_DEFAULT_ &tty_watcher);
+
+	rl_catch_sigwinch = false;
+	rl_callback_handler_install (prompt, on_readline_input);
+
+	ev_run (loop, 0);
 	putchar ('\n');
 
+	ev_loop_destroy (loop);
+
+	// User has terminated the program, let's save the history and clean up
 	char *dir = strdup (history_path);
 	(void) mkdir_with_parents (dirname (dir));
 	free (dir);
@@ -731,8 +776,8 @@ main (int argc, char *argv[])
 			history_path, strerror (errno));
 
 	free (history_path);
-	iconv_close (ctx.term_from_utf8);
-	iconv_close (ctx.term_to_utf8);
+	iconv_close (g_ctx.term_from_utf8);
+	iconv_close (g_ctx.term_to_utf8);
 	curl_slist_free_all (headers);
 	free (origin);
 	curl_easy_cleanup (curl);
