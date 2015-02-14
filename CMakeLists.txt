@@ -36,6 +36,30 @@ include (GNUInstallDirs)
 install (TARGETS ${PROJECT_NAME} DESTINATION ${CMAKE_INSTALL_BINDIR})
 install (FILES LICENSE DESTINATION ${CMAKE_INSTALL_DOCDIR})
 
+# Generate documentation from program help
+find_program (HELP2MAN_EXECUTABLE help2man)
+if (NOT HELP2MAN_EXECUTABLE)
+	message (FATAL_ERROR "help2man not found")
+endif (NOT HELP2MAN_EXECUTABLE)
+
+foreach (page ${PROJECT_NAME})
+	set (page_output "${PROJECT_BINARY_DIR}/${page}.1")
+	list (APPEND project_MAN_PAGES "${page_output}")
+	add_custom_command (OUTPUT ${page_output}
+		COMMAND ${HELP2MAN_EXECUTABLE} -N
+			"${PROJECT_BINARY_DIR}/${page}" -o ${page_output}
+		DEPENDS ${page}
+		COMMENT "Generating man page for ${page}" VERBATIM)
+endforeach (page)
+
+add_custom_target (docs ALL DEPENDS ${project_MAN_PAGES})
+
+foreach (page ${project_MAN_PAGES})
+	string (REGEX MATCH "\\.([0-9])" manpage_suffix "${page}")
+	install (FILES "${page}"
+		DESTINATION "${CMAKE_INSTALL_MANDIR}/man${CMAKE_MATCH_1}")
+endforeach (page)
+
 # CPack
 set (CPACK_PACKAGE_DESCRIPTION_SUMMARY "Shell for JSON-RPC 2.0 HTTP queries")
 set (CPACK_PACKAGE_VENDOR "Premysl Janouch")
@@ -53,4 +77,3 @@ set (CPACK_SOURCE_IGNORE_FILES "/\\\\.git;/build;/CMakeLists.txt.user")
 set (CPACK_SOURCE_PACKAGE_FILE_NAME "${PROJECT_NAME}-${project_VERSION}")
 
 include (CPack)
-

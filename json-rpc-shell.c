@@ -605,7 +605,7 @@ on_tty_readable (EV_P_ ev_io *handle, int revents)
 static void
 print_usage (const char *program_name)
 {
-	fprintf (stderr,
+	fprintf (stdout,
 		"Usage: %s [OPTION]... ENDPOINT\n"
 		"Trivial JSON-RPC shell.\n"
 		"\n"

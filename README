@@ -10,16 +10,25 @@ Fuck Java.  With a sharp, pointy object.  In the ass.  Hard.  json-c as well.
 
 Building and Running
 --------------------
-Build dependencies: CMake, pkg-config, libev, Jansson, cURL, readline
+Build dependencies: CMake, pkg-config, help2man, libev, Jansson, cURL, readline
 
  $ git clone https://github.com/pjanouch/json-rpc-shell.git
  $ mkdir build
  $ cd build
- $ cmake .. -DCMAKE_BUILD_TYPE=Debug
+ $ cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Debug
  $ make
 
-Now you can run the following command to get some help about the exact usage:
- $ ./json-rpc-shell --help
+To install the application, you can do either the usual:
+ $ make install
+
+Or you can try telling CMake to make a package for you.  For Debian it is:
+ $ cpack -G DEB
+ # dpkg -i json-rpc-shell-*.deb
+
+Note that for versions of CMake before 2.8.9, you need to prefix cpack with
+`fakeroot' or file ownership will end up wrong.
+
+Run the program with `--help' to obtain usage information.
 
 License
 -------
