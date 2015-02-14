@@ -4,6 +4,18 @@ notifications:
   channels: "anathema.us.nu#anathema"
   use_notice: true
   skip_join: true
+env:
+ global:
+  - secure: "Xe3sUsIDBcyA1orysIgtj4Mh5n3gfDlc5ERSzFDptTdP45wvmXiaBGi332XdudXWiVW1tW9MAF+BX27CpIf01L9g8b88+XIkUXQoWOLzT3Yrp9O+aEF4xoCCODQKAtVaYay9+GPQkJ65+pnM+mG6K7pAnyBjckn7DGcKSpt12kM="
+addons:
+ coverity_scan:
+  project:
+   name: "pjanouch/json-rpc-shell"
+   description: "Shell for JSON-RPC 2.0 HTTP queries"
+  notification_email: p.janouch@gmail.com
+  build_command_prepend: "cmake .. -DCMAKE_BUILD_TYPE=Release"
+  build_command: "make"
+  branch_pattern: coverity_scan
 compiler:
  - clang
  - gcc
