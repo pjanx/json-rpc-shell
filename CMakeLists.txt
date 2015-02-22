@@ -20,11 +20,13 @@ set (project_VERSION "${project_VERSION}.${project_VERSION_PATCH}")
 set (CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 
 # Dependencies
+find_package (Curses REQUIRED)
 find_package (PkgConfig REQUIRED)
 pkg_check_modules (dependencies REQUIRED libcurl jansson)
 find_package (LibEV REQUIRED)
 
-include_directories (${dependencies_INCLUDE_DIRS} ${LIBEV_INCLUDE_DIRS})
+include_directories (${CURSES_INCLUDE_DIR}
+	${dependencies_INCLUDE_DIRS} ${LIBEV_INCLUDE_DIRS})
 
 # Generate a configuration file
 configure_file (${PROJECT_SOURCE_DIR}/config.h.in ${PROJECT_BINARY_DIR}/config.h)
@@ -32,7 +34,7 @@ include_directories (${PROJECT_BINARY_DIR})
 
 # Build the main executable and link it
 add_executable (${PROJECT_NAME} ${PROJECT_NAME}.c siphash.c)
-target_link_libraries (${PROJECT_NAME}
+target_link_libraries (${PROJECT_NAME} ${CURSES_LIBRARY}
 	${dependencies_LIBRARIES} ${LIBEV_LIBRARIES} readline)
 
 # The files to be installed

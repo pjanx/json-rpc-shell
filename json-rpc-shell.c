@@ -21,11 +21,25 @@
 /// Some arbitrary limit for the history file
 #define HISTORY_LIMIT 10000
 
+// String constants for all attributes we use for output
+#define ATTR_PROMPT    "attr_prompt"
+#define ATTR_RESET     "attr_reset"
+#define ATTR_WARNING   "attr_warning"
+#define ATTR_ERROR     "attr_error"
+#define ATTR_INCOMING  "attr_incoming"
+#define ATTR_OUTGOING  "attr_outgoing"
+
+// User data for logger functions to enable formatted logging
+#define print_fatal_data    ATTR_ERROR
+#define print_error_data    ATTR_ERROR
+#define print_warning_data  ATTR_WARNING
+
 #include "config.h"
 #include "utils.c"
 
 #include <langinfo.h>
 #include <signal.h>
+#include <strings.h>
 
 #include <ev.h>
 #include <readline/readline.h>
@@ -33,13 +47,38 @@
 #include <curl/curl.h>
 #include <jansson.h>
 
+#include <curses.h>
+#include <term.h>
+
+// --- Configuration (application-specific) ------------------------------------
+
+static struct config_item g_config_table[] =
+{
+	{ ATTR_PROMPT,     NULL,  "Terminal attributes for the prompt"       },
+	{ ATTR_RESET,      NULL,  "String to reset terminal attributes"      },
+	{ ATTR_WARNING,    NULL,  "Terminal attributes for warnings"         },
+	{ ATTR_ERROR,      NULL,  "Terminal attributes for errors"           },
+	{ ATTR_INCOMING,   NULL,  "Terminal attributes for incoming traffic" },
+	{ ATTR_OUTGOING,   NULL,  "Terminal attributes for outgoing traffic" },
+	{ NULL,            NULL,  NULL                                       }
+};
+
 // --- Main program ------------------------------------------------------------
+
+enum color_mode
+{
+	COLOR_AUTO,                         ///< Autodetect if colours are available
+	COLOR_ALWAYS,                       ///< Always use coloured output
+	COLOR_NEVER                         ///< Never use coloured output
+};
 
 static struct app_context
 {
 	CURL *curl;                         ///< cURL handle
 	char curl_error[CURL_ERROR_SIZE];   ///< cURL error info buffer
 
+	struct str_map config;              ///< Program configuration
+	enum color_mode color_mode;         ///< Colour output mode
 	bool pretty_print;                  ///< Whether to pretty print
 	bool verbose;                       ///< Print requests
 	bool trust_all;                     ///< Don't verify peer certificates
@@ -51,6 +90,321 @@ static struct app_context
 	iconv_t term_from_utf8;             ///< UTF-8 to terminal encoding
 }
 g_ctx;
+
+// --- Attributed output -------------------------------------------------------
+
+static struct
+{
+	bool initialized;                   ///< Terminal is available
+	bool stdout_is_tty;                 ///< `stdout' is a terminal
+	bool stderr_is_tty;                 ///< `stderr' is a terminal
+
+	char *color_set[8];                 ///< Codes to set the foreground colour
+}
+g_terminal;
+
+static bool
+init_terminal (void)
+{
+	int tty_fd = -1;
+	if ((g_terminal.stderr_is_tty = isatty (STDERR_FILENO)))
+		tty_fd = STDERR_FILENO;
+	if ((g_terminal.stdout_is_tty = isatty (STDOUT_FILENO)))
+		tty_fd = STDOUT_FILENO;
+
+	int err;
+	if (tty_fd == -1 || setupterm (NULL, tty_fd, &err) == ERR)
+		return false;
+
+	// Make sure all terminal features used by us are supported
+	if (!set_a_foreground || !enter_bold_mode || !exit_attribute_mode)
+	{
+		del_curterm (cur_term);
+		return false;
+	}
+
+	for (size_t i = 0; i < N_ELEMENTS (g_terminal.color_set); i++)
+		g_terminal.color_set[i] = xstrdup (tparm (set_a_foreground,
+			i, 0, 0, 0, 0, 0, 0, 0, 0));
+
+	return g_terminal.initialized = true;
+}
+
+static void
+free_terminal (void)
+{
+	if (!g_terminal.initialized)
+		return;
+
+	for (size_t i = 0; i < N_ELEMENTS (g_terminal.color_set); i++)
+		free (g_terminal.color_set[i]);
+	del_curterm (cur_term);
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+typedef int (*terminal_printer_fn) (int);
+
+static int
+putchar_stderr (int c)
+{
+	return fputc (c, stderr);
+}
+
+static terminal_printer_fn
+get_attribute_printer (FILE *stream)
+{
+	if (stream == stdout && g_terminal.stdout_is_tty)
+		return putchar;
+	if (stream == stderr && g_terminal.stderr_is_tty)
+		return putchar_stderr;
+	return NULL;
+}
+
+static void
+vprint_attributed (struct app_context *ctx,
+	FILE *stream, const char *attribute, const char *fmt, va_list ap)
+{
+	terminal_printer_fn printer = get_attribute_printer (stream);
+	if (!attribute)
+		printer = NULL;
+
+	const char *value;
+	value = str_map_find (&ctx->config, attribute);
+	if (printer && soft_assert (value))
+		tputs (value, 1, printer);
+
+	vfprintf (stream, fmt, ap);
+
+	value = str_map_find (&ctx->config, ATTR_RESET);
+	if (printer && soft_assert (value))
+		tputs (value, 1, printer);
+}
+
+static void
+print_attributed (struct app_context *ctx,
+	FILE *stream, const char *attribute, const char *fmt, ...)
+{
+	va_list ap;
+	va_start (ap, fmt);
+	vprint_attributed (ctx, stream, attribute, fmt, ap);
+	va_end (ap);
+}
+
+static void
+log_message_attributed (void *user_data, const char *quote, const char *fmt,
+	va_list ap)
+{
+	FILE *stream = stderr;
+
+	print_attributed (&g_ctx, stream, user_data, "%s", quote);
+	vprint_attributed (&g_ctx, stream, user_data, fmt, ap);
+	fputs ("\n", stream);
+}
+
+static void
+init_colors (struct app_context *ctx)
+{
+	// Use escape sequences from terminfo if possible, and SGR as a fallback
+	if (init_terminal ())
+	{
+		const char *attrs[][2] =
+		{
+			{ ATTR_PROMPT,   enter_bold_mode         },
+			{ ATTR_RESET,    exit_attribute_mode     },
+			{ ATTR_WARNING,  g_terminal.color_set[3] },
+			{ ATTR_ERROR,    g_terminal.color_set[1] },
+			{ ATTR_INCOMING, ""                      },
+			{ ATTR_OUTGOING, ""                      },
+		};
+		for (size_t i = 0; i < N_ELEMENTS (attrs); i++)
+			str_map_set (&ctx->config, attrs[i][0], xstrdup (attrs[i][1]));
+	}
+	else
+	{
+		const char *attrs[][2] =
+		{
+			{ ATTR_PROMPT,   "\x1b[1m"               },
+			{ ATTR_RESET,    "\x1b[0m"               },
+			{ ATTR_WARNING,  "\x1b[33m"              },
+			{ ATTR_ERROR,    "\x1b[31m"              },
+			{ ATTR_INCOMING, ""                      },
+			{ ATTR_OUTGOING, ""                      },
+		};
+		for (size_t i = 0; i < N_ELEMENTS (attrs); i++)
+			str_map_set (&ctx->config, attrs[i][0], xstrdup (attrs[i][1]));
+	}
+
+	switch (ctx->color_mode)
+	{
+	case COLOR_ALWAYS:
+		g_terminal.stdout_is_tty = true;
+		g_terminal.stderr_is_tty = true;
+		break;
+	case COLOR_AUTO:
+		if (!g_terminal.initialized)
+		{
+	case COLOR_NEVER:
+			g_terminal.stdout_is_tty = false;
+			g_terminal.stderr_is_tty = false;
+		}
+	}
+
+	g_log_message_real = log_message_attributed;
+}
+
+// --- Configuration loading ---------------------------------------------------
+
+static bool
+read_hexa_escape (const char **cursor, struct str *output)
+{
+	int i;
+	char c, code = 0;
+
+	for (i = 0; i < 2; i++)
+	{
+		c = tolower (*(*cursor));
+		if (c >= '0' && c <= '9')
+			code = (code << 4) | (c - '0');
+		else if (c >= 'a' && c <= 'f')
+			code = (code << 4) | (c - 'a' + 10);
+		else
+			break;
+
+		(*cursor)++;
+	}
+
+	if (!i)
+		return false;
+
+	str_append_c (output, code);
+	return true;
+}
+
+static bool
+read_octal_escape (const char **cursor, struct str *output)
+{
+	int i;
+	char c, code = 0;
+
+	for (i = 0; i < 3; i++)
+	{
+		c = *(*cursor);
+		if (c < '0' || c > '7')
+			break;
+
+		code = (code << 3) | (c - '0');
+		(*cursor)++;
+	}
+
+	if (!i)
+		return false;
+
+	str_append_c (output, code);
+	return true;
+}
+
+static bool
+read_string_escape_sequence (const char **cursor,
+	struct str *output, struct error **e)
+{
+	int c;
+	switch ((c = *(*cursor)++))
+	{
+	case '?':  str_append_c (output, '?');  break;
+	case '"':  str_append_c (output, '"');  break;
+	case '\\': str_append_c (output, '\\'); break;
+	case 'a':  str_append_c (output, '\a'); break;
+	case 'b':  str_append_c (output, '\b'); break;
+	case 'f':  str_append_c (output, '\f'); break;
+	case 'n':  str_append_c (output, '\n'); break;
+	case 'r':  str_append_c (output, '\r'); break;
+	case 't':  str_append_c (output, '\t'); break;
+	case 'v':  str_append_c (output, '\v'); break;
+
+	case 'e':
+	case 'E':
+		str_append_c (output, '\x1b');
+		break;
+
+	case 'x':
+	case 'X':
+		if (!read_hexa_escape (cursor, output))
+		{
+			error_set (e, "invalid hexadecimal escape");
+			return false;
+		}
+		break;
+
+	case '\0':
+		error_set (e, "premature end of escape sequence");
+		return false;
+
+	default:
+		(*cursor)--;
+		if (!read_octal_escape (cursor, output))
+		{
+			error_set (e, "unknown escape sequence");
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool
+unescape_string (const char *s, struct str *output, struct error **e)
+{
+	int c;
+	while ((c = *s++))
+	{
+		if (c != '\\')
+			str_append_c (output, c);
+		else if (!read_string_escape_sequence (&s, output, e))
+			return false;
+	}
+	return true;
+}
+
+static void
+load_config (struct app_context *ctx)
+{
+	// TODO: employ a better configuration file format, so that we don't have
+	//   to do this convoluted post-processing anymore.
+
+	struct str_map map;
+	str_map_init (&map);
+	map.free = free;
+
+	struct error *e = NULL;
+	if (!read_config_file (&map, &e))
+	{
+		print_error ("error loading configuration: %s", e->message);
+		error_free (e);
+		exit (EXIT_FAILURE);
+	}
+
+	struct str_map_iter iter;
+	str_map_iter_init (&iter, &map);
+	while (str_map_iter_next (&iter))
+	{
+		struct error *e = NULL;
+		struct str value;
+		str_init (&value);
+		if (!unescape_string (iter.link->data, &value, &e))
+		{
+			print_error ("error reading configuration: %s: %s",
+				iter.link->key, e->message);
+			error_free (e);
+			exit (EXIT_FAILURE);
+		}
+
+		str_map_set (&ctx->config, iter.link->key, str_steal (&value));
+	}
+
+	str_map_free (&map);
+}
+
+// --- Main program ------------------------------------------------------------
 
 #define PARSE_FAIL(...)                                                        \
 	BLOCK_START                                                                \
@@ -146,7 +500,7 @@ parse_response (struct app_context *ctx, struct str *buf)
 		if (!s)
 			print_error ("character conversion failed for `%s'", "result");
 		else
-			printf ("%s\n", s);
+			print_attributed (ctx, stdout, ATTR_INCOMING, "%s\n", s);
 		free (s);
 	}
 
@@ -250,7 +604,7 @@ make_json_rpc_call (struct app_context *ctx,
 		if (!req_term)
 			print_error ("%s: %s", "verbose", "character conversion failed");
 		else
-			printf ("%s\n", req_term);
+			print_attributed (ctx, stdout, ATTR_OUTGOING, "%s\n", req_term);
 		free (req_term);
 	}
 
@@ -458,6 +812,11 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv,
 		{ 'p', "pretty", NULL, 0, "pretty-print the responses" },
 		{ 't', "trust-all", NULL, 0, "don't care about SSL/TLS certificates" },
 		{ 'v', "verbose", NULL, 0, "print the request before sending" },
+		{ 'c', "color", "WHEN", OPT_LONG_ONLY,
+		  "colorize output: never, always, or auto" },
+		{ 'w', "write-default-cfg", "FILENAME",
+		  OPT_OPTIONAL_ARG | OPT_LONG_ONLY,
+		  "write a default configuration file and exit" },
 		{ 0, NULL, NULL, 0, NULL }
 	};
 
@@ -478,21 +837,29 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv,
 	case 'V':
 		printf (PROGRAM_NAME " " PROGRAM_VERSION "\n");
 		exit (EXIT_SUCCESS);
-	case 'a':
-		ctx->auto_id = true;
+
+	case 'o': *origin = optarg;         break;
+	case 'a': ctx->auto_id      = true; break;
+	case 'p': ctx->pretty_print = true; break;
+	case 't': ctx->trust_all    = true; break;
+	case 'v': ctx->verbose      = true; break;
+
+	case 'c':
+		if      (!strcasecmp (optarg, "never"))
+			ctx->color_mode = COLOR_NEVER;
+		else if (!strcasecmp (optarg, "always"))
+			ctx->color_mode = COLOR_ALWAYS;
+		else if (!strcasecmp (optarg, "auto"))
+			ctx->color_mode = COLOR_AUTO;
+		else
+		{
+			print_error ("`%s' is not a valid value for `%s'", optarg, "color");
+			exit (EXIT_FAILURE);
+		}
 		break;
-	case 'o':
-		*origin = optarg;
-		break;
-	case 'p':
-		ctx->pretty_print = true;
-		break;
-	case 't':
-		ctx->trust_all = true;
-		break;
-	case 'v':
-		ctx->verbose = true;
-		break;
+	case 'w':
+		call_write_default_config (optarg, g_config_table);
+		exit (EXIT_SUCCESS);
 
 	default:
 		print_error ("wrong options");
@@ -516,9 +883,15 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv,
 int
 main (int argc, char *argv[])
 {
+	str_map_init (&g_ctx.config);
+	g_ctx.config.free = free;
+
 	char *origin = NULL;
 	char *endpoint = NULL;
 	parse_program_arguments (&g_ctx, argc, argv, &origin, &endpoint);
+
+	init_colors (&g_ctx);
+	load_config (&g_ctx);
 
 	if (strncmp (endpoint, "http://", 7)
 	 && strncmp (endpoint, "https://", 8))
@@ -582,10 +955,18 @@ main (int argc, char *argv[])
 		xstrdup_printf ("%s/" PROGRAM_NAME "/history", data_home);
 	(void) read_history (history_path);
 
-	// XXX: we should use termcap/terminfo for the codes but who cares
-	char *prompt = xstrdup_printf ("%c\x1b[1m%cjson-rpc> %c\x1b[0m%c",
-		RL_PROMPT_START_IGNORE, RL_PROMPT_END_IGNORE,
-		RL_PROMPT_START_IGNORE, RL_PROMPT_END_IGNORE);
+	char *prompt;
+	if (!get_attribute_printer (stdout))
+		prompt = xstrdup_printf ("json-rpc> ");
+	else
+	{
+		// XXX: to be completely correct, we should use tputs, but we cannot
+		const char *prompt_attrs = str_map_find (&g_ctx.config, ATTR_PROMPT);
+		const char *reset_attrs  = str_map_find (&g_ctx.config, ATTR_RESET);
+		prompt = xstrdup_printf ("%c%s%cjson-rpc> %c%s%c",
+			RL_PROMPT_START_IGNORE, prompt_attrs, RL_PROMPT_END_IGNORE,
+			RL_PROMPT_START_IGNORE, reset_attrs,  RL_PROMPT_END_IGNORE);
+	}
 
 	// readline 6.3 doesn't immediately redraw the terminal upon reception
 	// of SIGWINCH, so we must run it in an event loop to remediate that
@@ -625,5 +1006,7 @@ main (int argc, char *argv[])
 	curl_slist_free_all (headers);
 	free (origin);
 	curl_easy_cleanup (curl);
+	str_map_free (&g_ctx.config);
+	free_terminal ();
 	return EXIT_SUCCESS;
 }

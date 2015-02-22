@@ -59,8 +59,10 @@
 // --- Logging -----------------------------------------------------------------
 
 static void
-log_message_stdio (const char *quote, const char *fmt, va_list ap)
+log_message_stdio (void *user_data, const char *quote, const char *fmt,
+	va_list ap)
 {
+	(void) user_data;
 	FILE *stream = stderr;
 
 	fputs (quote, stream);
@@ -68,25 +70,48 @@ log_message_stdio (const char *quote, const char *fmt, va_list ap)
 	fputs ("\n", stream);
 }
 
-static void
-log_message (const char *quote, const char *fmt, ...) ATTRIBUTE_PRINTF (2, 3);
+static void (*g_log_message_real) (void *, const char *, const char *, va_list)
+	= log_message_stdio;
 
 static void
-log_message (const char *quote, const char *fmt, ...)
+log_message (void *user_data, const char *quote, const char *fmt, ...)
+	ATTRIBUTE_PRINTF (3, 4);
+
+static void
+log_message (void *user_data, const char *quote, const char *fmt, ...)
 {
 	va_list ap;
 	va_start (ap, fmt);
-	log_message_stdio (quote, fmt, ap);
+	g_log_message_real (user_data, quote, fmt, ap);
 	va_end (ap);
 }
 
 // `fatal' is reserved for unexpected failures that would harm further operation
 
-// TODO: colors (probably copy over from stracepkg)
-#define print_fatal(...)    log_message ("fatal: ",   __VA_ARGS__)
-#define print_error(...)    log_message ("error: ",   __VA_ARGS__)
-#define print_warning(...)  log_message ("warning: ", __VA_ARGS__)
-#define print_status(...)   log_message ("-- ",       __VA_ARGS__)
+#ifndef print_fatal_data
+#define print_fatal_data    NULL
+#endif
+
+#ifndef print_error_data
+#define print_error_data    NULL
+#endif
+
+#ifndef print_warning_data
+#define print_warning_data  NULL
+#endif
+
+#ifndef print_status_data
+#define print_status_data   NULL
+#endif
+
+#define print_fatal(...) \
+	log_message (print_fatal_data,   "fatal: ",   __VA_ARGS__)
+#define print_error(...) \
+	log_message (print_error_data,   "error: ",   __VA_ARGS__)
+#define print_warning(...) \
+	log_message (print_warning_data, "warning: ", __VA_ARGS__)
+#define print_status(...) \
+	log_message (print_status_data,  "-- ",       __VA_ARGS__)
 
 #define exit_fatal(...)                                                        \
 	BLOCK_START                                                                \
@@ -479,6 +504,16 @@ struct str_map
 	size_t (*key_xfrm) (char *dest, const char *src, size_t n);
 };
 
+// As long as you don't remove the current entry, you can modify the map.
+// Use `link' directly to access the data.
+
+struct str_map_iter
+{
+	struct str_map *map;                ///< The map we're iterating
+	size_t next_index;                  ///< Next table index to search
+	struct str_map_link *link;          ///< Current link
+};
+
 #define STR_MAP_MIN_ALLOC 16
 
 typedef void (*str_map_free_fn) (void *);
@@ -510,6 +545,29 @@ str_map_free (struct str_map *self)
 
 	free (self->map);
 	self->map = NULL;
+}
+
+static void
+str_map_iter_init (struct str_map_iter *self, struct str_map *map)
+{
+	self->map = map;
+	self->next_index = 0;
+	self->link = NULL;
+}
+
+static void *
+str_map_iter_next (struct str_map_iter *self)
+{
+	struct str_map *map = self->map;
+	if (self->link)
+		self->link = self->link->next;
+	while (!self->link)
+	{
+		if (self->next_index >= map->alloc)
+			return NULL;
+		self->link = map->map[self->next_index++];
+	}
+	return self->link->data;
 }
 
 static uint64_t
@@ -865,16 +923,6 @@ struct config_item
 	const char *default_value;
 	const char *description;
 };
-
-static void
-load_config_defaults (struct str_map *config, const struct config_item *table)
-{
-	for (; table->key != NULL; table++)
-		if (table->default_value)
-			str_map_set (config, table->key, xstrdup (table->default_value));
-		else
-			str_map_set (config, table->key, NULL);
-}
 
 static bool
 read_config_file (struct str_map *config, struct error **e)
