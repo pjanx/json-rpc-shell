@@ -169,16 +169,19 @@ vprint_attributed (struct app_context *ctx,
 	if (!attribute)
 		printer = NULL;
 
-	const char *value;
-	value = str_map_find (&ctx->config, attribute);
-	if (printer && soft_assert (value))
+	if (printer)
+	{
+		const char *value = str_map_find (&ctx->config, attribute);
 		tputs (value, 1, printer);
+	}
 
 	vfprintf (stream, fmt, ap);
 
-	value = str_map_find (&ctx->config, ATTR_RESET);
-	if (printer && soft_assert (value))
+	if (printer)
+	{
+		const char *value = str_map_find (&ctx->config, ATTR_RESET);
 		tputs (value, 1, printer);
+	}
 }
 
 static void
@@ -465,6 +468,8 @@ parse_response (struct app_context *ctx, struct str *buf)
 		char *utf8 = xstrdup_printf ("error response: %" JSON_INTEGER_FORMAT
 			" (%s)", code_val, json_string_value (message));
 		char *s = iconv_xstrdup (ctx->term_from_utf8, utf8, -1, NULL);
+		free (utf8);
+
 		if (!s)
 			print_error ("character conversion failed for `%s'", "error");
 		else
