@@ -26,8 +26,12 @@ find_package (LibEV REQUIRED)
 
 include_directories (${dependencies_INCLUDE_DIRS} ${LIBEV_INCLUDE_DIRS})
 
+# Generate a configuration file
+configure_file (${PROJECT_SOURCE_DIR}/config.h.in ${PROJECT_BINARY_DIR}/config.h)
+include_directories (${PROJECT_BINARY_DIR})
+
 # Build the main executable and link it
-add_executable (${PROJECT_NAME} ${PROJECT_NAME}.c)
+add_executable (${PROJECT_NAME} ${PROJECT_NAME}.c siphash.c)
 target_link_libraries (${PROJECT_NAME}
 	${dependencies_LIBRARIES} ${LIBEV_LIBRARIES} readline)
 

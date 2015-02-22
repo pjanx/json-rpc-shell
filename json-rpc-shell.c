@@ -1,7 +1,7 @@
 /*
  * json-rpc-shell.c: trivial JSON-RPC 2.0 shell
  *
- * Copyright (c) 2014, Přemysl Janouch <p.janouch@gmail.com>
+ * Copyright (c) 2014 - 2015, Přemysl Janouch <p.janouch@gmail.com>
  * All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
@@ -18,218 +18,20 @@
  *
  */
 
-#define PROGRAM_NAME "json-rpc-shell"
-#define PROGRAM_VERSION "alpha"
-
 /// Some arbitrary limit for the history file
 #define HISTORY_LIMIT 10000
 
-#define _POSIX_C_SOURCE 199309L
-#define _XOPEN_SOURCE 600
+#include "config.h"
+#include "utils.c"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <stdarg.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <string.h>
-#include <locale.h>
-#include <errno.h>
-
-#include <libgen.h>
-#include <iconv.h>
 #include <langinfo.h>
-#include <sys/stat.h>
 #include <signal.h>
-#include <unistd.h>
 
 #include <ev.h>
-#include <getopt.h>
 #include <readline/readline.h>
 #include <readline/history.h>
 #include <curl/curl.h>
 #include <jansson.h>
-
-#if defined __GNUC__
-#define ATTRIBUTE_PRINTF(x, y) __attribute__ ((format (printf, x, y)))
-#else // ! __GNUC__
-#define ATTRIBUTE_PRINTF(x, y)
-#endif // ! __GNUC__
-
-#define N_ELEMENTS(a) (sizeof (a) / sizeof ((a)[0]))
-
-#define BLOCK_START  do {
-#define BLOCK_END    } while (0)
-
-// --- Logging -----------------------------------------------------------------
-
-static void
-log_message_stdio (const char *quote, const char *fmt, va_list ap)
-{
-	FILE *stream = stderr;
-
-	fputs (quote, stream);
-	vfprintf (stream, fmt, ap);
-	fputs ("\n", stream);
-}
-
-static void
-log_message (const char *quote, const char *fmt, ...) ATTRIBUTE_PRINTF (2, 3);
-
-static void
-log_message (const char *quote, const char *fmt, ...)
-{
-	va_list ap;
-	va_start (ap, fmt);
-	log_message_stdio (quote, fmt, ap);
-	va_end (ap);
-}
-
-// `fatal' is reserved for unexpected failures that would harm further operation
-
-// TODO: colors (probably copy over from stracepkg)
-#define print_fatal(...)    log_message ("fatal: ",   __VA_ARGS__)
-#define print_error(...)    log_message ("error: ",   __VA_ARGS__)
-#define print_warning(...)  log_message ("warning: ", __VA_ARGS__)
-#define print_status(...)   log_message ("-- ",       __VA_ARGS__)
-
-#define exit_fatal(...)                                                        \
-	BLOCK_START                                                                \
-		print_fatal (__VA_ARGS__);                                             \
-		exit (EXIT_FAILURE);                                                   \
-	BLOCK_END
-
-// --- Dynamically allocated strings -------------------------------------------
-
-// Basically a string builder to abstract away manual memory management.
-
-struct str
-{
-	char *str;                          ///< String data, null terminated
-	size_t alloc;                       ///< How many bytes are allocated
-	size_t len;                         ///< How long the string actually is
-};
-
-static void
-str_init (struct str *self)
-{
-	self->alloc = 16;
-	self->len = 0;
-	self->str = strcpy (malloc (self->alloc), "");
-}
-
-static void
-str_free (struct str *self)
-{
-	free (self->str);
-	self->str = NULL;
-	self->alloc = 0;
-	self->len = 0;
-}
-
-static void
-str_ensure_space (struct str *self, size_t n)
-{
-	// We allocate at least one more byte for the terminating null character
-	size_t new_alloc = self->alloc;
-	while (new_alloc <= self->len + n)
-		new_alloc <<= 1;
-	if (new_alloc != self->alloc)
-		self->str = realloc (self->str, (self->alloc = new_alloc));
-}
-
-static void
-str_append_data (struct str *self, const char *data, size_t n)
-{
-	str_ensure_space (self, n);
-	memcpy (self->str + self->len, data, n);
-	self->len += n;
-	self->str[self->len] = '\0';
-}
-
-// --- Utilities ---------------------------------------------------------------
-
-static char *strdup_printf (const char *format, ...) ATTRIBUTE_PRINTF (1, 2);
-
-static char *
-strdup_printf (const char *format, ...)
-{
-	va_list ap;
-	va_start (ap, format);
-	int size = vsnprintf (NULL, 0, format, ap);
-	va_end (ap);
-	if (size < 0)
-		return NULL;
-
-	char buf[size + 1];
-	va_start (ap, format);
-	size = vsnprintf (buf, sizeof buf, format, ap);
-	va_end (ap);
-	if (size < 0)
-		return NULL;
-
-	return strdup (buf);
-}
-
-static char *
-iconv_strdup (iconv_t conv, char *in, size_t in_len, size_t *out_len)
-{
-	char *buf, *buf_ptr;
-	size_t out_left, buf_alloc;
-
-	buf = buf_ptr = malloc (out_left = buf_alloc = 64);
-
-	char *in_ptr = in;
-	if (in_len == (size_t) -1)
-		in_len = strlen (in) + 1;
-
-	while (iconv (conv, (char **) &in_ptr, &in_len,
-		(char **) &buf_ptr, &out_left) == (size_t) -1)
-	{
-		if (errno != E2BIG)
-		{
-			free (buf);
-			return NULL;
-		}
-		out_left += buf_alloc;
-		char *new_buf = realloc (buf, buf_alloc <<= 1);
-		buf_ptr += new_buf - buf;
-		buf = new_buf;
-	}
-	if (out_len)
-		*out_len = buf_alloc - out_left;
-	return buf;
-}
-
-static bool
-ensure_directory_existence (const char *path)
-{
-	struct stat st;
-	if (stat (path, &st))
-	{
-		if (mkdir (path, S_IRWXU | S_IRWXG | S_IRWXO))
-			return false;
-	}
-	else if (!S_ISDIR (st.st_mode))
-		return false;
-	return true;
-}
-
-static bool
-mkdir_with_parents (char *path)
-{
-	char *p = path;
-	while ((p = strchr (p + 1, '/')))
-	{
-		*p = '\0';
-		bool success = ensure_directory_existence (path);
-		*p = '/';
-
-		if (!success)
-			return false;
-	}
-	return ensure_directory_existence (path);
-}
 
 // --- Main program ------------------------------------------------------------
 
@@ -306,9 +108,9 @@ parse_response (struct app_context *ctx, struct str *buf)
 			PARSE_FAIL ("invalid `%s' field in error response", "message");
 
 		json_int_t code_val = json_integer_value (code);
-		char *utf8 = strdup_printf ("error response: %" JSON_INTEGER_FORMAT
+		char *utf8 = xstrdup_printf ("error response: %" JSON_INTEGER_FORMAT
 			" (%s)", code_val, json_string_value (message));
-		char *s = iconv_strdup (ctx->term_from_utf8, utf8, -1, NULL);
+		char *s = iconv_xstrdup (ctx->term_from_utf8, utf8, -1, NULL);
 		if (!s)
 			print_error ("character conversion failed for `%s'", "error");
 		else
@@ -321,7 +123,7 @@ parse_response (struct app_context *ctx, struct str *buf)
 	if (data)
 	{
 		char *utf8 = json_dumps (data, JSON_ENCODE_ANY);
-		char *s = iconv_strdup (ctx->term_from_utf8, utf8, -1, NULL);
+		char *s = iconv_xstrdup (ctx->term_from_utf8, utf8, -1, NULL);
 		free (utf8);
 
 		if (!s)
@@ -338,7 +140,7 @@ parse_response (struct app_context *ctx, struct str *buf)
 			flags |= JSON_INDENT (2);
 
 		char *utf8 = json_dumps (result, flags);
-		char *s = iconv_strdup (ctx->term_from_utf8, utf8, -1, NULL);
+		char *s = iconv_xstrdup (ctx->term_from_utf8, utf8, -1, NULL);
 		free (utf8);
 
 		if (!s)
@@ -443,7 +245,8 @@ make_json_rpc_call (struct app_context *ctx,
 	char *req_utf8 = json_dumps (request, 0);
 	if (ctx->verbose)
 	{
-		char *req_term = iconv_strdup (ctx->term_from_utf8, req_utf8, -1, NULL);
+		char *req_term = iconv_xstrdup
+			(ctx->term_from_utf8, req_utf8, -1, NULL);
 		if (!req_term)
 			print_error ("%s: %s", "verbose", "character conversion failed");
 		else
@@ -494,7 +297,7 @@ make_json_rpc_call (struct app_context *ctx,
 
 	if (!success)
 	{
-		char *s = iconv_strdup (ctx->term_from_utf8,
+		char *s = iconv_xstrdup (ctx->term_from_utf8,
 			buf.str, buf.len + 1, NULL);
 		if (!s)
 			print_error ("character conversion failed for `%s'",
@@ -515,7 +318,7 @@ process_input (struct app_context *ctx, char *user_input)
 	char *input;
 	size_t len;
 
-	if (!(input = iconv_strdup (ctx->term_to_utf8, user_input, -1, &len)))
+	if (!(input = iconv_xstrdup (ctx->term_to_utf8, user_input, -1, &len)))
 	{
 		print_error ("character conversion failed for `%s'", "user input");
 		goto fail;
@@ -642,79 +445,81 @@ on_tty_readable (EV_P_ ev_io *handle, int revents)
 }
 
 static void
-print_usage (const char *program_name)
+parse_program_arguments (struct app_context *ctx, int argc, char **argv,
+	char **origin, char **endpoint)
 {
-	fprintf (stdout,
-		"Usage: %s [OPTION]... ENDPOINT\n"
-		"Trivial JSON-RPC shell.\n"
-		"\n"
-		"  -h, --help       display this help and exit\n"
-		"  -V, --version    output version information and exit\n"
-		"  -a, --auto-id    automatic `id' fields\n"
-		"  -o, --origin O   set the HTTP Origin header\n"
-		"  -p, --pretty     pretty-print the responses\n"
-		"  -t, --trust-all  don't care about SSL/TLS certificates\n"
-		"  -v, --verbose    print the request before sending\n",
-		program_name);
+	static const struct opt opts[] =
+	{
+		{ 'd', "debug", NULL, 0, "run in debug mode" },
+		{ 'h', "help", NULL, 0, "display this help and exit" },
+		{ 'V', "version", NULL, 0, "output version information and exit" },
+		{ 'a', "auto-id", NULL, 0, "automatic `id' fields" },
+		{ 'o', "origin", "O", 0, "set the HTTP Origin header" },
+		{ 'p', "pretty", NULL, 0, "pretty-print the responses" },
+		{ 't', "trust-all", NULL, 0, "don't care about SSL/TLS certificates" },
+		{ 'v', "verbose", NULL, 0, "print the request before sending" },
+		{ 0, NULL, NULL, 0, NULL }
+	};
+
+	struct opt_handler oh;
+	opt_handler_init (&oh, argc, argv, opts,
+		"ENDPOINT", "Trivial JSON-RPC shell.");
+
+	int c;
+	while ((c = opt_handler_get (&oh)) != -1)
+	switch (c)
+	{
+	case 'd':
+		g_debug_mode = true;
+		break;
+	case 'h':
+		opt_handler_usage (&oh, stdout);
+		exit (EXIT_SUCCESS);
+	case 'V':
+		printf (PROGRAM_NAME " " PROGRAM_VERSION "\n");
+		exit (EXIT_SUCCESS);
+	case 'a':
+		ctx->auto_id = true;
+		break;
+	case 'o':
+		*origin = optarg;
+		break;
+	case 'p':
+		ctx->pretty_print = true;
+		break;
+	case 't':
+		ctx->trust_all = true;
+		break;
+	case 'v':
+		ctx->verbose = true;
+		break;
+
+	default:
+		print_error ("wrong options");
+		opt_handler_usage (&oh, stderr);
+		exit (EXIT_FAILURE);
+	}
+
+	argc -= optind;
+	argv += optind;
+
+	if (argc != 1)
+	{
+		opt_handler_usage (&oh, stderr);
+		exit (EXIT_FAILURE);
+	}
+
+	*endpoint = argv[0];
+	opt_handler_free (&oh);
 }
 
 int
 main (int argc, char *argv[])
 {
-	const char *invocation_name = argv[0];
-
-	static struct option opts[] =
-	{
-		{ "help",      no_argument,       NULL, 'h' },
-		{ "version",   no_argument,       NULL, 'V' },
-		{ "auto-id",   no_argument,       NULL, 'a' },
-		{ "origin",    required_argument, NULL, 'o' },
-		{ "pretty",    no_argument,       NULL, 'p' },
-		{ "trust-all", no_argument,       NULL, 't' },
-		{ "verbose",   no_argument,       NULL, 'v' },
-		{ NULL,        0,                 NULL,  0  }
-	};
-
 	char *origin = NULL;
-	while (1)
-	{
-		int c, opt_index;
+	char *endpoint = NULL;
+	parse_program_arguments (&g_ctx, argc, argv, &origin, &endpoint);
 
-		c = getopt_long (argc, argv, "hVapvt", opts, &opt_index);
-		if (c == -1)
-			break;
-
-		switch (c)
-		{
-		case 'h':
-			print_usage (invocation_name);
-			exit (EXIT_SUCCESS);
-		case 'V':
-			printf (PROGRAM_NAME " " PROGRAM_VERSION "\n");
-			exit (EXIT_SUCCESS);
-
-		case 'a':  g_ctx.auto_id      = true;  break;
-		case 'o':  origin = optarg;            break;
-		case 'p':  g_ctx.pretty_print = true;  break;
-		case 't':  g_ctx.trust_all    = true;  break;
-		case 'v':  g_ctx.verbose      = true;  break;
-
-		default:
-			print_error ("wrong options");
-			exit (EXIT_FAILURE);
-		}
-	}
-
-	argv += optind;
-	argc -= optind;
-
-	if (argc != 1)
-	{
-		print_usage (invocation_name);
-		exit (EXIT_FAILURE);
-	}
-
-	const char *endpoint = argv[0];
 	if (strncmp (endpoint, "http://", 7)
 	 && strncmp (endpoint, "https://", 8))
 		exit_fatal ("the endpoint address must begin with"
@@ -729,7 +534,7 @@ main (int argc, char *argv[])
 
 	if (origin)
 	{
-		origin = strdup_printf ("Origin: %s", origin);
+		origin = xstrdup_printf ("Origin: %s", origin);
 		headers = curl_slist_append (headers, origin);
 	}
 
@@ -751,12 +556,12 @@ main (int argc, char *argv[])
 #ifdef __linux__
 	// XXX: not quite sure if this is actually desirable
 	// TODO: instead retry with JSON_ENSURE_ASCII
-	encoding = strdup_printf ("%s//TRANSLIT", encoding);
+	encoding = xstrdup_printf ("%s//TRANSLIT", encoding);
 #endif // __linux__
 
-	if ((g_ctx.term_from_utf8 = iconv_open (encoding, "utf-8"))
+	if ((g_ctx.term_from_utf8 = iconv_open (encoding, "UTF-8"))
 		== (iconv_t) -1
-	 || (g_ctx.term_to_utf8 = iconv_open ("utf-8", nl_langinfo (CODESET)))
+	 || (g_ctx.term_to_utf8 = iconv_open ("UTF-8", nl_langinfo (CODESET)))
 		== (iconv_t) -1)
 		exit_fatal ("creating the UTF-8 conversion object failed: %s",
 			strerror (errno));
@@ -767,18 +572,18 @@ main (int argc, char *argv[])
 		if (!home)
 			exit_fatal ("where is your $HOME, kid?");
 
-		data_home = strdup_printf ("%s/.local/share", home);
+		data_home = xstrdup_printf ("%s/.local/share", home);
 	}
 
 	using_history ();
 	stifle_history (HISTORY_LIMIT);
 
 	char *history_path =
-		strdup_printf ("%s/" PROGRAM_NAME "/history", data_home);
+		xstrdup_printf ("%s/" PROGRAM_NAME "/history", data_home);
 	(void) read_history (history_path);
 
 	// XXX: we should use termcap/terminfo for the codes but who cares
-	char *prompt = strdup_printf ("%c\x1b[1m%cjson-rpc> %c\x1b[0m%c",
+	char *prompt = xstrdup_printf ("%c\x1b[1m%cjson-rpc> %c\x1b[0m%c",
 		RL_PROMPT_START_IGNORE, RL_PROMPT_END_IGNORE,
 		RL_PROMPT_START_IGNORE, RL_PROMPT_END_IGNORE);
 
@@ -806,8 +611,8 @@ main (int argc, char *argv[])
 	ev_loop_destroy (loop);
 
 	// User has terminated the program, let's save the history and clean up
-	char *dir = strdup (history_path);
-	(void) mkdir_with_parents (dirname (dir));
+	char *dir = xstrdup (history_path);
+	(void) mkdir_with_parents (dirname (dir), NULL);
 	free (dir);
 
 	if (write_history (history_path))
