@@ -387,6 +387,48 @@ write_callback (char *ptr, size_t size, size_t nmemb, void *user_data)
 		goto fail;                                                             \
 	BLOCK_END
 
+static bool
+try_advance (const char **p, const char *text)
+{
+	size_t len = strlen (text);
+	if (strncmp (*p, text, len))
+		return false;
+
+	*p += len;
+	return true;
+}
+
+static bool
+validate_content_type (const char *type)
+{
+	const char *content_types[] =
+	{
+		"application/json-rpc",  // obsolete
+		"application/json"
+	};
+	const char *tails[] =
+	{
+		"; charset=utf-8",
+		"; charset=UTF-8",
+		""
+	};
+
+	bool found = false;
+	for (size_t i = 0; i < N_ELEMENTS (content_types); i++)
+		if ((found = try_advance (&type, content_types[i])))
+			break;
+	if (!found)
+		return false;
+
+	for (size_t i = 0; i < N_ELEMENTS (tails); i++)
+		if ((found = try_advance (&type, tails[i])))
+			break;
+	if (!found)
+		return false;
+
+	return !*type;
+}
+
 static void
 make_json_rpc_call (struct app_context *ctx,
 	const char *method, json_t *id, json_t *params)
@@ -435,13 +477,10 @@ make_json_rpc_call (struct app_context *ctx,
 	bool success = false;
 	if (id)
 	{
-		// TODO: maybe also accept "...; charset=UTF-8"
 		if (!type)
 			print_warning ("missing `Content-Type' header");
-		else if (strcmp (type, "application/json")
-			&& strcmp (type, "application/json-rpc"))  // obsolete
+		else if (!validate_content_type (type))
 			print_warning ("unexpected `Content-Type' header: %s", type);
-
 		success = parse_response (ctx, &buf);
 	}
 	else
