@@ -20,13 +20,24 @@ set (project_VERSION "${project_VERSION}.${project_VERSION_PATCH}")
 set (CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 
 # Dependencies
-find_package (Curses REQUIRED)
+find_package (Curses)
 find_package (PkgConfig REQUIRED)
 pkg_check_modules (dependencies REQUIRED libcurl jansson)
 find_package (LibEV REQUIRED)
+pkg_check_modules (ncursesw ncursesw)
 
-include_directories (${CURSES_INCLUDE_DIR}
-	${dependencies_INCLUDE_DIRS} ${LIBEV_INCLUDE_DIRS})
+set (project_libraries ${dependencies_LIBRARIES} ${LIBEV_LIBRARIES} readline)
+include_directories (${dependencies_INCLUDE_DIRS} ${LIBEV_INCLUDE_DIRS})
+
+if (ncursesw_FOUND)
+	list (APPEND project_libraries ${ncursesw_LIBRARIES})
+	include_directories (${ncursesw_INCLUDE_DIRS})
+elseif (CURSES_FOUND)
+	list (APPEND project_libraries ${CURSES_LIBRARY})
+	include_directories (${CURSES_INCLUDE_DIR})
+else (CURSES_FOUND)
+	message (SEND_ERROR "Curses not found")
+endif (ncursesw_FOUND)
 
 # Generate a configuration file
 configure_file (${PROJECT_SOURCE_DIR}/config.h.in ${PROJECT_BINARY_DIR}/config.h)
@@ -34,8 +45,7 @@ include_directories (${PROJECT_BINARY_DIR})
 
 # Build the main executable and link it
 add_executable (${PROJECT_NAME} ${PROJECT_NAME}.c siphash.c)
-target_link_libraries (${PROJECT_NAME} ${CURSES_LIBRARY}
-	${dependencies_LIBRARIES} ${LIBEV_LIBRARIES} readline)
+target_link_libraries (${PROJECT_NAME} ${project_libraries})
 
 # The files to be installed
 include (GNUInstallDirs)
