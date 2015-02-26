@@ -1,5 +1,9 @@
 # Build files
-/json-rpc-shell
+/build
 
 # Qt Creator files
-/json-rpc-shell.*
+/CMakeLists.txt.user*
+/json-rpc-shell.config
+/json-rpc-shell.files
+/json-rpc-shell.creator*
+/json-rpc-shell.includes
