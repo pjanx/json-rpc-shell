@@ -129,10 +129,14 @@ log_message (void *user_data, const char *quote, const char *fmt, ...)
 static bool g_debug_mode;               ///< Debug messages are printed
 static bool g_soft_asserts_are_deadly;  ///< soft_assert() aborts as well
 
+#ifndef print_debug_data
+#define print_debug_data   NULL
+#endif
+
 #define print_debug(...)                                                       \
 	BLOCK_START                                                                \
 		if (g_debug_mode)                                                      \
-			log_message ("debug: ", __VA_ARGS__);                              \
+			log_message (print_debug_data, "debug: ", __VA_ARGS__);            \
 	BLOCK_END
 
 static void
