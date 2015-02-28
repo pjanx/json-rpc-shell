@@ -10,10 +10,12 @@ Fuck Java.  With a sharp, pointy object.  In the ass.  Hard.  json-c as well.
 
 Building and Running
 --------------------
-Build dependencies: CMake, pkg-config, help2man
+Build dependencies: CMake, pkg-config, help2man, liberty (included)
 Runtime dependencies: libev, Jansson, cURL, readline
 
  $ git clone https://github.com/pjanouch/json-rpc-shell.git
+ $ git submodule init
+ $ git submodule update
  $ mkdir build
  $ cd build
  $ cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Debug

@@ -35,9 +35,10 @@
 #define print_warning_data  ATTR_WARNING
 
 #include "config.h"
-#include "utils.c"
+#include "liberty/liberty.c"
 
 #include <langinfo.h>
+#include <locale.h>
 #include <signal.h>
 #include <strings.h>
 

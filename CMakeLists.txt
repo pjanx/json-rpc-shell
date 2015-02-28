@@ -3,8 +3,8 @@ cmake_minimum_required (VERSION 2.8.5)
 
 # Moar warnings
 if ("${CMAKE_C_COMPILER_ID}" MATCHES "GNU" OR CMAKE_COMPILER_IS_GNUC)
-	set (CMAKE_C_FLAGS "-std=c99")
-	set (CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -Wall -Wextra")
+	# -Wunused-function is pretty annoying here, as everything is static
+	set (CMAKE_C_FLAGS "-std=c99 -Wall -Wextra -Wno-unused-function")
 endif ("${CMAKE_C_COMPILER_ID}" MATCHES "GNU" OR CMAKE_COMPILER_IS_GNUC)
 
 # Version
@@ -44,7 +44,7 @@ configure_file (${PROJECT_SOURCE_DIR}/config.h.in ${PROJECT_BINARY_DIR}/config.h
 include_directories (${PROJECT_BINARY_DIR})
 
 # Build the main executable and link it
-add_executable (${PROJECT_NAME} ${PROJECT_NAME}.c siphash.c)
+add_executable (${PROJECT_NAME} ${PROJECT_NAME}.c)
 target_link_libraries (${PROJECT_NAME} ${project_libraries})
 
 # The files to be installed
