@@ -1,0 +1,57 @@
+acid
+====
+
+`acid' is A Continuous Integration Daemon.  Currently under heavy development.
+
+The aim of this project is to provide a dumbed-down alternative to Travis CI.
+I find it way too complex to set up and run in a local setting, while the basic
+gist of it is actually very simple -- run some stuff on new git commits.
+
+`acid' will provide a JSON-RPC 2.0 service for frontends over FastCGI or SCGI,
+as well as a webhook endpoint for notifications about new commits.
+
+`acid' will be able to tell you about build results via e-mail and/or IRC.
+
+Builds will only be supported on the same machine as the daemon.  Eventually I
+might be able to add support for fully replicable builds using Docker.
+
+With this being my own project, of course it is written in event-looped C99
+where everything is stuffed into just a few files.  At least I hope it's written
+in a somewhat clean manner.  Feel free to contribute.
+
+Building and Installing
+-----------------------
+Build dependencies: CMake, pkg-config, help2man, liberty (included)
+Runtime dependencies: libev, Jansson
+
+ $ git clone https://github.com/pjanouch/acid.git
+ $ git submodule init
+ $ git submodule update
+ $ mkdir build
+ $ cd build
+ $ cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Debug
+ $ make
+
+To install the application, you can do either the usual:
+ # make install
+
+Or you can try telling CMake to make a package for you.  For Debian it is:
+ $ cpack -G DEB
+ # dpkg -i acid-*.deb
+
+Note that for versions of CMake before 2.8.9, you need to prefix cpack with
+`fakeroot' or file ownership will end up wrong.
+
+Usage
+-----
+TODO.  The main application hasn't been written yet.
+
+License
+-------
+`acid' is written by Přemysl Janouch <p.janouch@gmail.com>.
+
+You may use the software under the terms of the ISC license, the text of which
+is included within the package, or, at your option, you may relicense the work
+under the MIT or the Modified BSD License, as listed at the following site:
+
+http://www.gnu.org/licenses/license-list.html

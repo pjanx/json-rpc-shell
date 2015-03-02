@@ -1,0 +1,9 @@
+# Build files
+/build
+
+# Qt Creator files
+/CMakeLists.txt.user*
+/acid.config
+/acid.files
+/acid.creator*
+/acid.includes
