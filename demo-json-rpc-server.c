@@ -427,14 +427,25 @@ fcgi_nv_parser_push (struct fcgi_nv_parser *self, void *data, size_t len)
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 // TODO
+
+enum fcgi_request_state
+{
+	FCGI_REQUEST_PARAMS,                ///< Reading headers
+	FCGI_REQUEST_STDIN                  ///< Reading input
+};
+
 struct fcgi_request
 {
 	struct fcgi_muxer *muxer;           ///< The parent muxer
 
 	uint16_t request_id;                ///< The ID of this request
+	enum fcgi_request_state state;      ///< Parsing state
+	struct str_map headers;             ///< Headers
+	struct fcgi_nv_parser hdr_parser;   ///< Header parser
 };
 
 // TODO
+
 struct fcgi_muxer
 {
 	struct fcgi_parser parser;          ///< FastCGI message parser
@@ -492,6 +503,14 @@ struct scgi_parser
 	size_t headers_len;                 ///< Length of the netstring contents
 	struct str name;                    ///< Header name so far
 	struct str value;                   ///< Header value so far
+
+	/// Finished parsing request headers
+	void (*on_headers_read) (void *user_data);
+
+	/// Content available; len == 0 means end of file
+	void (*on_content) (void *user_data, const void *data, size_t len);
+
+	void *user_data;                    ///< User data passed to callbacks
 };
 
 static void
@@ -525,7 +544,8 @@ scgi_parser_push (struct scgi_parser *self,
 			return false;
 		}
 
-		// TODO: a "on_eof" callback?
+		// Indicate end of file
+		self->on_content (self->user_data, NULL, 0);
 		return true;
 	}
 
@@ -621,10 +641,9 @@ scgi_parser_push (struct scgi_parser *self,
 		break;
 	}
 	case SCGI_READING_CONTENT:
-		// TODO: a "on_content" callback?
+		self->on_content (self->user_data, self->input.str, self->input.len);
+		str_remove_slice (&self->input, 0, self->input.len);
 		return true;
-
-		break;
 	}
 }
 
@@ -684,29 +703,158 @@ server_context_free (struct server_context *self)
 // returns back a JSON reply.  This function may get called multiple times if
 // the user sends a batch request.
 
+static bool
+try_advance (const char **p, const char *text)
+{
+	size_t len = strlen (text);
+	if (strncmp (*p, text, len))
+		return false;
+
+	*p += len;
+	return true;
+}
+
+static bool
+validate_json_rpc_content_type (const char *type)
+{
+	const char *content_types[] =
+	{
+		"application/json-rpc",  // obsolete
+		"application/json"
+	};
+	const char *tails[] =
+	{
+		"; charset=utf-8",
+		"; charset=UTF-8",
+		""
+	};
+
+	bool found = false;
+	for (size_t i = 0; i < N_ELEMENTS (content_types); i++)
+		if ((found = try_advance (&type, content_types[i])))
+			break;
+	if (!found)
+		return false;
+
+	for (size_t i = 0; i < N_ELEMENTS (tails); i++)
+		if ((found = try_advance (&type, tails[i])))
+			break;
+	if (!found)
+		return false;
+
+	return !*type;
+}
+
 // --- Requests ----------------------------------------------------------------
 
 // TODO: something to read in the headers and decide what to do with the request
 //   e.g. whether to reject it with a 404, or do JSON-RPC, or ignore it with 200
 
-#if 0
-// This doesn't necessarily have to be an object by itself either; we can have
-// a function that does/returns something based on the headers
-
 struct request
 {
+	// TODO *ctx
+
+	void *user_data;                    ///< User data argument for callbacks
+
+	/// Callback to write some CGI response data to the output
+	void (*write_cb) (void *user_data, const void *data, size_t len);
+
+	/// Callback to close the connection
+	void (*close_cb) (void *user_data);
+
+	struct request_handler *handler;    ///< Current request handler
+	void *handler_data;                 ///< User data for the handler
+};
+
+struct request_handler
+{
+	/// Install ourselves as the handler for the request if applicable
+	bool (*try_handle) (struct request *request, struct str_map *headers);
+
+	/// Handle incoming data
+	void (*push_cb) (struct request *request, const void *data, size_t len);
+
+	/// Destroy the handler
+	void (*destroy_cb) (struct request *request);
 };
 
 static void
 request_init (struct request *self)
 {
+	memset (self, 0, sizeof *self);
 }
 
 static void
 request_free (struct request *self)
 {
+	// TODO: destroy the handler?
 }
-#endif
+
+static void
+request_start (struct request *self, struct str_map *headers)
+{
+	bool handled = false;
+	// TODO: try request handlers registered in self->ctx
+	if (handled)
+		return;
+
+	// Unable to serve the request
+	struct str response;
+	str_init (&response);
+	str_append (&response, "404 Not Found\r\n\r\n");
+	self->write_cb (self->user_data, response.str, response.len);
+	str_free (&response);
+
+	// XXX: how will the clients behave when this happens?
+	self->close_cb (self->user_data);
+}
+
+static void
+request_push (struct request *self, const void *data, size_t len)
+{
+	if (soft_assert (self->handler))
+		self->handler->push_cb (self, data, len);
+}
+
+// --- Requests handlers -------------------------------------------------------
+
+static bool
+request_handler_json_rpc_try_handle
+	(struct request *request, struct str_map *headers)
+{
+	const char *content_type = str_map_find (headers, "CONTENT_TYPE");
+	const char *method = str_map_find (headers, "REQUEST_METHOD");
+
+	if (strcmp (method, "POST")
+	 || !validate_json_rpc_content_type (content_type))
+		return false;
+
+	// TODO: install the handler, perhaps construct an object
+	return true;
+}
+
+static void
+request_handler_json_rpc_push
+	(struct request *request, const void *data, size_t len)
+{
+	// TODO: append to a buffer
+	// TODO: len == 0: process the request
+}
+
+static void
+request_handler_json_rpc_destroy (struct request *request)
+{
+	// TODO
+}
+
+struct request_handler g_request_handler_json_rpc =
+{
+	.try_handle = request_handler_json_rpc_try_handle,
+	.push_cb    = request_handler_json_rpc_push,
+	.destroy_cb = request_handler_json_rpc_destroy,
+};
+
+// TODO: another request handler to respond to all GETs with a message
 
 // --- Client communication handlers -------------------------------------------
 
@@ -809,7 +957,43 @@ static struct client_impl g_client_fcgi =
 struct client_scgi
 {
 	struct scgi_parser parser;          ///< SCGI stream parser
+	struct request request;             ///< Request
 };
+
+static void
+client_scgi_write (void *user_data, const void *data, size_t len)
+{
+	struct client *client = user_data;
+	client_write (client, data, len);
+}
+
+static void
+client_scgi_close (void *user_data)
+{
+	struct client *client = user_data;
+	struct client_scgi *self = client->impl_data;
+
+	// TODO
+}
+
+static void
+client_scgi_on_headers_read (void *user_data)
+{
+	struct client *client = user_data;
+	struct client_scgi *self = client->impl_data;
+
+	request_start (&self->request, &self->parser.headers);
+}
+
+static void
+client_scgi_on_content (void *user_data, const void *data, size_t len)
+{
+	struct client *client = user_data;
+	struct client_scgi *self = client->impl_data;
+
+	// XXX: make sure this is understood as EOF
+	request_push (&self->request, data, len);
+}
 
 static void
 client_scgi_init (struct client *client)
@@ -817,8 +1001,15 @@ client_scgi_init (struct client *client)
 	struct client_scgi *self = xcalloc (1, sizeof *self);
 	client->impl_data = self;
 
+	request_init (&self->request);
+	self->request.write_cb       = client_scgi_write;
+	self->request.close_cb       = client_scgi_close;
+	self->request.user_data      = client;
+
 	scgi_parser_init (&self->parser);
-	// TODO: configure the parser
+	self->parser.on_headers_read = client_scgi_on_headers_read;
+	self->parser.on_content      = client_scgi_on_content;
+	self->parser.user_data       = client;
 }
 
 static void
@@ -826,6 +1017,9 @@ client_scgi_destroy (struct client *client)
 {
 	struct client_scgi *self = client->impl_data;
 	client->impl_data = NULL;
+
+	// TODO: do something more to abort the request?
+	request_free (&self->request);
 
 	scgi_parser_free (&self->parser);
 	free (self);
@@ -891,6 +1085,8 @@ on_client_ready (EV_P_ ev_io *watcher, int revents)
 	struct server_context *ctx = ev_userdata (loop);
 	struct client *client = watcher->data;
 
+	// FIXME: don't close the connection on EOF; we need to be able to keep
+	//   the connection open and respond in an asynchronous manner
 	if (revents & EV_READ)
 		if (!read_loop (EV_A_ watcher, on_client_data))
 			goto error;
