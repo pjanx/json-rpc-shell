@@ -23,9 +23,12 @@ set (CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 find_package (PkgConfig REQUIRED)
 pkg_check_modules (dependencies REQUIRED jansson)
 find_package (LibEV REQUIRED)
+find_package (LibMagic REQUIRED)
 
-set (project_libraries ${dependencies_LIBRARIES} ${LIBEV_LIBRARIES})
-include_directories (${dependencies_INCLUDE_DIRS} ${LIBEV_INCLUDE_DIRS})
+set (project_libraries ${dependencies_LIBRARIES}
+	${LIBEV_LIBRARIES} ${LIBMAGIC_LIBRARIES})
+include_directories (${dependencies_INCLUDE_DIRS}
+	${LIBEV_INCLUDE_DIRS} ${LIBMAGIC_INCLUDE_DIRS})
 
 # Generate a configuration file
 configure_file (${PROJECT_SOURCE_DIR}/config.h.in ${PROJECT_BINARY_DIR}/config.h)

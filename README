@@ -2,13 +2,15 @@ acid
 ====
 
 `acid' is A Continuous Integration Daemon.  Currently under heavy development.
+Right now I'm working on a demo JSON-RPC server that will serve as the basis for
+the final daemon.
 
 The aim of this project is to provide a dumbed-down alternative to Travis CI.
 I find it way too complex to set up and run in a local setting, while the basic
 gist of it is actually very simple -- run some stuff on new git commits.
 
-`acid' will provide a JSON-RPC 2.0 service for frontends over FastCGI or SCGI,
-as well as a webhook endpoint for notifications about new commits.
+`acid' will provide a JSON-RPC 2.0 service for frontends over FastCGI, SCGI, or
+WebSockets, as well as a webhook endpoint for notifications about new commits.
 
 `acid' will be able to tell you about build results via e-mail and/or IRC.
 
@@ -21,7 +23,8 @@ in a somewhat clean manner.  Feel free to contribute.
 
 Building and Installing
 -----------------------
-Build dependencies: CMake, pkg-config, help2man, liberty (included)
+Build dependencies: CMake, pkg-config, help2man, libmagic,
+                    liberty (included), http-parser (included)
 Runtime dependencies: libev, Jansson
 
  $ git clone https://github.com/pjanouch/acid.git

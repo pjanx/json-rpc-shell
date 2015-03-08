@@ -34,6 +34,7 @@
 
 #include <ev.h>
 #include <jansson.h>
+#include <magic.h>
 
 // --- Extensions to liberty ---------------------------------------------------
 
@@ -733,7 +734,7 @@ fcgi_muxer_on_abort_request
 		return;
 	}
 
-	// TODO: abort the request
+	// TODO: abort the request: let it somehow produce FCGI_END_REQUEST
 }
 
 static void
@@ -995,6 +996,8 @@ static struct config_item g_config_table[] =
 	{ "bind_host",       NULL,              "Address of the server"          },
 	{ "port_fastcgi",    "9000",            "Port to bind for FastCGI"       },
 	{ "port_scgi",       NULL,              "Port to bind for SCGI"          },
+	{ "port_ws",         NULL,              "Port to bind for WebSockets"    },
+	{ "static_root",     NULL,              "The root for static content"    },
 	{ NULL,              NULL,              NULL                             }
 };
 
@@ -1146,9 +1149,6 @@ json_rpc_ping (struct server_context *ctx, json_t *params)
 static json_t *
 process_json_rpc_request (struct server_context *ctx, json_t *request)
 {
-	// TODO: takes a parsed JSON request and returns back a JSON reply.
-	//   This function may get called multiple times for batch requests.
-
 	if (!json_is_object (request))
 		return json_rpc_response (NULL, NULL,
 			json_rpc_error (JSON_RPC_ERROR_INVALID_REQUEST, NULL));
@@ -1183,7 +1183,6 @@ process_json_rpc_request (struct server_context *ctx, json_t *request)
 		return response;
 
 	// Notifications don't get responses
-	// TODO: separate notifications from non-notifications?
 	json_decref (response);
 	return NULL;
 }
@@ -1320,7 +1319,8 @@ request_start (struct request *self, struct str_map *headers)
 	// Unable to serve the request
 	struct str response;
 	str_init (&response);
-	str_append (&response, "404 Not Found\r\n\r\n");
+	str_append (&response, "Status: 404 Not Found\n");
+	str_append (&response, "Content-Type: text/plain\n\n");
 	self->write_cb (self->user_data, response.str, response.len);
 	str_free (&response);
 	return false;
@@ -1393,7 +1393,147 @@ struct request_handler g_request_handler_json_rpc =
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-// TODO: another request handler to respond to all GETs with a message
+// TODO: refactor this spaghetti-tier code
+static bool
+request_handler_static_try_handle
+	(struct request *request, struct str_map *headers)
+{
+	struct server_context *ctx = request->ctx;
+	const char *root = str_map_find (&ctx->config, "static_root");
+	if (!root)
+	{
+		print_debug ("static document root not configured");
+		return false;
+	}
+
+	const char *method = str_map_find (headers, "REQUEST_METHOD");
+	if (!method || strcmp (method, "GET"))
+		return false;
+
+	// TODO: look at <SCRIPT_NAME, PATH_INFO>, REQUEST_URI in the headers
+	const char *path_info = str_map_find (headers, "PATH_INFO");
+	if (!path_info)
+	{
+		print_debug ("PATH_INFO not defined");
+		return false;
+	}
+
+	struct str_vector v;
+	str_vector_init (&v);
+	split_str_ignore_empty (path_info, '/', &v);
+
+	struct str_vector resolved;
+	str_vector_init (&resolved);
+
+	// So that the joined path begins with a slash
+	str_vector_add (&resolved, "");
+
+	// We need to filter the path to stay in our root
+	// Being able to read /etc/passwd would be rather embarrasing
+	for (size_t i = 0; i < v.len; i++)
+	{
+		const char *dir = v.vector[i];
+		if (!strcmp (dir, "."))
+			continue;
+
+		if (strcmp (dir, ".."))
+			str_vector_add (&resolved, dir);
+		else if (resolved.len)
+			str_vector_remove (&resolved, resolved.len - 1);
+	}
+	str_vector_free (&v);
+
+	char *suffix = join_str_vector (&resolved, '/');
+	str_vector_free (&resolved);
+
+	char *path = xstrdup_printf ("%s%s", root, suffix);
+
+	FILE *fp = fopen (path, "rb");
+	if (!fp)
+	{
+		struct str response;
+		str_init (&response);
+		str_append (&response, "Status: 404 Not Found\n");
+		str_append (&response, "Content-Type: text/plain\n\n");
+		str_append_printf (&response,
+			"File %s was not found on this server\n", suffix);
+		request->write_cb (request->user_data, response.str, response.len);
+		str_free (&response);
+
+		free (suffix);
+		free (path);
+		return false;
+	}
+
+	free (suffix);
+	free (path);
+
+	uint8_t buf[8192];
+	size_t len;
+
+	// Try to detect the Content-Type from the actual contents
+	char *mime_type = NULL;
+	if ((len = fread (buf, 1, sizeof buf, fp)))
+	{
+		magic_t cookie;
+		const char *magic = NULL;
+		if ((cookie = magic_open (MAGIC_MIME)))
+		{
+			if (!magic_load (cookie, NULL)
+			 && (magic = magic_buffer (cookie, buf, len)))
+				mime_type = xstrdup (magic);
+			magic_close (cookie);
+		}
+	}
+	if (!mime_type)
+	{
+		print_debug ("MIME type detection failed");
+		mime_type = xstrdup ("application/octet_stream");
+	}
+
+	struct str response;
+	str_init (&response);
+	str_append (&response, "Status: 200 OK\n");
+	str_append_printf (&response, "Content-Type: %s\n\n", mime_type);
+	request->write_cb (request->user_data, response.str, response.len);
+	str_free (&response);
+	free (mime_type);
+
+	// Write the chunk we've used to help us with magic detection;
+	// obviously we have to do it after we've written the headers
+	if (len)
+		request->write_cb (request->user_data, buf, len);
+
+	while ((len = fread (buf, 1, sizeof buf, fp)))
+		request->write_cb (request->user_data, buf, len);
+	fclose (fp);
+	return true;
+}
+
+static bool
+request_handler_static_push
+	(struct request *request, const void *data, size_t len)
+{
+	(void) request;
+	(void) data;
+	(void) len;
+
+	// Ignoring all content; we shouldn't receive any (GET)
+	return false;
+}
+
+static void
+request_handler_static_destroy (struct request *request)
+{
+	(void) request;
+}
+
+struct request_handler g_request_handler_static =
+{
+	.try_handle = request_handler_static_try_handle,
+	.push_cb    = request_handler_static_push,
+	.destroy_cb = request_handler_static_destroy,
+};
 
 // --- Client communication handlers -------------------------------------------
 
@@ -1673,6 +1813,35 @@ static struct client_impl g_client_scgi =
 	.push    = client_scgi_push,
 };
 
+// - - WebSockets  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+static void
+client_ws_init (struct client *client)
+{
+	// TODO
+}
+
+static void
+client_ws_destroy (struct client *client)
+{
+	// TODO
+}
+
+static bool
+client_ws_push (struct client *client, const void *data, size_t len)
+{
+	// TODO: first push everything into a http_parser, then after a protocol
+	//   upgrade start parsing the WebSocket frames themselves
+}
+
+static struct client_impl g_client_ws =
+{
+	.init    = client_ws_init,
+	.destroy = client_ws_destroy,
+	.push    = client_ws_push,
+};
+
+
 // --- Basic server stuff ------------------------------------------------------
 
 struct listener
@@ -1874,6 +2043,7 @@ setup_listen_fds (struct server_context *ctx, struct error **e)
 	const char *bind_host = str_map_find (&ctx->config, "bind_host");
 	const char *port_fcgi = str_map_find (&ctx->config, "port_fastcgi");
 	const char *port_scgi = str_map_find (&ctx->config, "port_scgi");
+	const char *port_ws   = str_map_find (&ctx->config, "port_ws");
 
 	struct addrinfo gai_hints;
 	memset (&gai_hints, 0, sizeof gai_hints);
@@ -1883,11 +2053,14 @@ setup_listen_fds (struct server_context *ctx, struct error **e)
 
 	struct str_vector ports_fcgi;  str_vector_init (&ports_fcgi);
 	struct str_vector ports_scgi;  str_vector_init (&ports_scgi);
+	struct str_vector ports_ws;    str_vector_init (&ports_ws);
 
 	if (port_fcgi)
 		split_str_ignore_empty (port_fcgi, ',', &ports_fcgi);
 	if (port_scgi)
 		split_str_ignore_empty (port_scgi, ',', &ports_scgi);
+	if (port_ws)
+		split_str_ignore_empty (port_ws,   ',', &ports_ws);
 
 	size_t n_ports = ports_fcgi.len + ports_scgi.len;
 	ctx->listeners = xcalloc (n_ports, sizeof *ctx->listeners);
@@ -1898,9 +2071,13 @@ setup_listen_fds (struct server_context *ctx, struct error **e)
 	for (size_t i = 0; i < ports_scgi.len; i++)
 		listener_add (ctx, bind_host, ports_scgi.vector[i],
 			&gai_hints, &g_client_scgi);
+	for (size_t i = 0; i < ports_ws.len; i++)
+		listener_add (ctx, bind_host, ports_ws.vector[i],
+			&gai_hints, &g_client_ws);
 
 	str_vector_free (&ports_fcgi);
 	str_vector_free (&ports_scgi);
+	str_vector_free (&ports_ws);
 
 	if (!ctx->n_listeners)
 	{
@@ -2040,6 +2217,7 @@ main (int argc, char *argv[])
 
 	(void) signal (SIGPIPE, SIG_IGN);
 
+	LIST_PREPEND (ctx.handlers, &g_request_handler_static);
 	LIST_PREPEND (ctx.handlers, &g_request_handler_json_rpc);
 
 	if (!parse_config (&ctx, &e)
