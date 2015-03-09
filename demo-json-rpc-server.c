@@ -24,6 +24,8 @@
 #define print_status_data   ((void *) LOG_INFO)
 #define print_debug_data    ((void *) LOG_DEBUG)
 
+#define LIBERTY_WANT_SSL
+
 #include "config.h"
 #include "liberty/liberty.c"
 
@@ -35,6 +37,10 @@
 #include <ev.h>
 #include <jansson.h>
 #include <magic.h>
+
+// FIXME: don't include the implementation, include the header and compile
+//   the implementation separately
+#include "http-parser/http_parser.c"
 
 // --- Extensions to liberty ---------------------------------------------------
 
@@ -104,6 +110,48 @@ str_pack_u64 (struct str *self, uint64_t x)
 	uint8_t tmp[8] =
 		{ x >> 56, x >> 48, x >> 40, x >> 32, x >> 24, x >> 16, x >> 8, x };
 	str_append_data (self, tmp, sizeof tmp);
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+static void
+base64_encode (const void *data, size_t len, struct str *output)
+{
+	const char *alphabet =
+		"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+	const uint8_t *p = data;
+	size_t n_groups = len / 3;
+	size_t tail = len - n_groups * 3;
+	uint32_t group;
+
+	for (; n_groups--; p += 3)
+	{
+		group = p[0] << 16 | p[1] << 8 | p[2];
+		str_append_c (output, alphabet[(group >> 18) & 63]);
+		str_append_c (output, alphabet[(group >> 12) & 63]);
+		str_append_c (output, alphabet[(group >>  6) & 63]);
+		str_append_c (output, alphabet[ group        & 63]);
+	}
+
+	switch (tail)
+	{
+	case 2:
+		group = p[0] << 16 | p[1] << 8;
+		str_append_c (output, alphabet[(group >> 18) & 63]);
+		str_append_c (output, alphabet[(group >> 12) & 63]);
+		str_append_c (output, alphabet[(group >>  6) & 63]);
+		str_append_c (output, '=');
+		break;
+	case 1:
+		group = p[0] << 16;
+		str_append_c (output, alphabet[(group >> 18) & 63]);
+		str_append_c (output, alphabet[(group >> 12) & 63]);
+		str_append_c (output, '=');
+		str_append_c (output, '=');
+	default:
+		break;
+	}
 }
 
 // --- libev helpers -----------------------------------------------------------
@@ -989,6 +1037,438 @@ scgi_parser_push (struct scgi_parser *self,
 	return false;
 }
 
+// --- WebSockets --------------------------------------------------------------
+
+#define WS_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+#define SEC_WS_KEY       "Sec-WebSocket-Key"
+#define SEC_WS_ACCEPT    "Sec-WebSocket-Accept"
+#define SEC_WS_PROTOCOL  "Sec-WebSocket-Protocol"
+#define SEC_WS_VERSION   "Sec-WebSocket-Version"
+
+static char *
+ws_encode_response_key (const char *key)
+{
+	char *response_key = xstrdup_printf ("%s" WS_GUID, key);
+	unsigned char hash[SHA_DIGEST_LENGTH];
+	SHA1 ((unsigned char *) response_key, strlen (response_key), hash);
+	free (response_key);
+
+	struct str base64;
+	str_init (&base64);
+	base64_encode (hash, sizeof hash, &base64);
+	return str_steal (&base64);
+}
+
+enum ws_status
+{
+	// These names aren't really standard, just somewhat descriptive.
+	// The RFC isn't really much cleaner about their meaning.
+
+	WS_STATUS_NORMAL       = 1000,
+	WS_STATUS_GOING_AWAY   = 1001,
+	WS_STATUS_PROTOCOL     = 1002,
+	WS_STATUS_UNACCEPTABLE = 1003,
+	WS_STATUS_INCONSISTENT = 1007,
+	WS_STATUS_POLICY       = 1008,
+	WS_STATUS_TOO_BIG      = 1009,
+	WS_STATUS_EXTENSION    = 1010,
+	WS_STATUS_UNEXPECTED   = 1011,
+
+	// Reserved for internal usage
+	WS_STATUS_MISSING      = 1005,
+	WS_STATUS_ABNORMAL     = 1006,
+	WS_STATUS_TLS          = 1015
+};
+
+// - - Frame parser  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+enum ws_parser_state
+{
+	WS_PARSER_FIXED,                    ///< Parsing fixed length part
+	WS_PARSER_PAYLOAD_LEN_16,           ///< Parsing extended payload length
+	WS_PARSER_PAYLOAD_LEN_64,           ///< Parsing extended payload length
+	WS_PARSER_MASK,                     ///< Parsing masking-key
+	WS_PARSER_PAYLOAD                   ///< Parsing payload
+};
+
+enum ws_opcode
+{
+	// Non-control
+	WS_OPCODE_CONT   =  0,
+	WS_OPCODE_TEXT   =  1,
+	WS_OPCODE_BINARY =  2,
+
+	// Control
+	WS_OPCODE_CLOSE  =  8,
+	WS_OPCODE_PING   =  9,
+	WS_OPCODE_PONG   = 10
+};
+
+struct ws_parser
+{
+	struct str input;                   ///< External input buffer
+	enum ws_parser_state state;         ///< Parsing state
+
+	unsigned is_fin     : 1;            ///< Final frame of a message?
+	unsigned is_masked  : 1;            ///< Is the frame masked?
+	unsigned reserved_1 : 1;            ///< Reserved
+	unsigned reserved_2 : 1;            ///< Reserved
+	unsigned reserved_3 : 1;            ///< Reserved
+	enum ws_opcode opcode;              ///< Opcode
+	uint32_t mask;                      ///< Frame mask
+	uint64_t payload_len;               ///< Payload length
+
+	// TODO: it wouldn't be half bad if there was a callback to just validate
+	//   the frame header (such as the maximum payload length)
+
+	/// Callback for when a message is successfully parsed.
+	/// The actual payload is stored in "input", of length "payload_len".
+	bool (*on_frame) (void *user_data, const struct ws_parser *self);
+
+	void *user_data;                    ///< User data for callbacks
+};
+
+static void
+ws_parser_init (struct ws_parser *self)
+{
+	memset (self, 0, sizeof *self);
+	str_init (&self->input);
+}
+
+static void
+ws_parser_free (struct ws_parser *self)
+{
+	str_free (&self->input);
+}
+
+static void
+ws_parser_demask (struct ws_parser *self)
+{
+	// Yes, this could be made faster.  For example by reading the mask in
+	// native byte ordering and applying it directly here.
+
+	uint64_t end = self->payload_len & ~(uint64_t) 3;
+	for (uint64_t i = 0; i < end; i += 4)
+	{
+		self->input.str[i + 3] ^=  self->mask        & 0xFF;
+		self->input.str[i + 2] ^= (self->mask >>  8) & 0xFF;
+		self->input.str[i + 1] ^= (self->mask >> 16) & 0xFF;
+		self->input.str[i    ] ^= (self->mask >> 24) & 0xFF;
+	}
+
+	switch (self->payload_len - end)
+	{
+	case 3:
+		self->input.str[end + 2] ^= (self->mask >>  8) & 0xFF;
+	case 2:
+		self->input.str[end + 1] ^= (self->mask >> 16) & 0xFF;
+	case 1:
+		self->input.str[end    ] ^= (self->mask >> 24) & 0xFF;
+		break;
+	}
+}
+
+static bool
+ws_parser_push (struct ws_parser *self, const void *data, size_t len)
+{
+	str_append_data (&self->input, data, len);
+
+	struct msg_unpacker unpacker;
+	msg_unpacker_init (&unpacker, self->input.str, self->input.len);
+
+	while (true)
+	switch (self->state)
+	{
+		uint8_t u8;
+		uint16_t u16;
+
+	case WS_PARSER_FIXED:
+		if (self->input.len < 2)
+			return true;
+
+		(void) msg_unpacker_u8 (&unpacker, &u8);
+		self->is_fin      = (u8 >> 7) &   1;
+		self->reserved_1  = (u8 >> 6) &   1;
+		self->reserved_2  = (u8 >> 5) &   1;
+		self->reserved_3  = (u8 >> 4) &   1;
+		self->opcode      =  u8       &  15;
+
+		(void) msg_unpacker_u8 (&unpacker, &u8);
+		self->is_masked   = (u8 >> 7) &   1;
+		self->payload_len =  u8       & 127;
+
+		if (self->payload_len == 127)
+			self->state = WS_PARSER_PAYLOAD_LEN_64;
+		else if (self->payload_len == 126)
+			self->state = WS_PARSER_PAYLOAD_LEN_16;
+		else
+			self->state = self->is_masked
+				? WS_PARSER_MASK
+				: WS_PARSER_PAYLOAD;
+
+		str_remove_slice (&self->input, 0, 2);
+		break;
+
+	case WS_PARSER_PAYLOAD_LEN_16:
+		if (self->input.len < 2)
+			return true;
+
+		(void) msg_unpacker_u16 (&unpacker, &u16);
+		self->payload_len = u16;
+
+		self->state = self->is_masked
+			? WS_PARSER_MASK
+			: WS_PARSER_PAYLOAD;
+		str_remove_slice (&self->input, 0, 2);
+		break;
+
+	case WS_PARSER_PAYLOAD_LEN_64:
+		if (self->input.len < 8)
+			return true;
+
+		(void) msg_unpacker_u64 (&unpacker, &self->payload_len);
+
+		self->state = self->is_masked
+			? WS_PARSER_MASK
+			: WS_PARSER_PAYLOAD;
+		str_remove_slice (&self->input, 0, 8);
+		break;
+
+	case WS_PARSER_MASK:
+		if (self->input.len < 4)
+			return true;
+
+		(void) msg_unpacker_u32 (&unpacker, &self->mask);
+
+		self->state = WS_PARSER_PAYLOAD;
+		str_remove_slice (&self->input, 0, 4);
+		break;
+
+	case WS_PARSER_PAYLOAD:
+		if (self->input.len < self->payload_len)
+			return true;
+
+		if (self->is_masked)
+			ws_parser_demask (self);
+		if (!self->on_frame (self->user_data, self))
+			return false;
+
+		self->state = WS_PARSER_FIXED;
+		str_reset (&self->input);
+		break;
+	}
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+// TODO: something to build frames for data
+
+// - - Server handler  - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+// WebSockets aren't CGI-compatible, therefore we must handle the initial HTTP
+// handshake ourselves.  Luckily it's not too much of a bother with http-parser.
+// Typically there will be a normal HTTP server in front of us, proxying the
+// requests based on the URI.
+
+enum ws_handler_state
+{
+	WS_HANDLER_HTTP,                    ///< Parsing HTTP
+	WS_HANDLER_WEBSOCKETS               ///< Parsing WebSockets frames
+};
+
+struct ws_handler
+{
+	enum ws_handler_state state;        ///< State
+
+	http_parser hp;                     ///< HTTP parser
+	bool parsing_header_value;          ///< Parsing header value or field?
+	struct str field;                   ///< Field part buffer
+	struct str value;                   ///< Value part buffer
+	struct str_map headers;             ///< HTTP Headers
+	struct str url;                     ///< Request URL
+
+	struct ws_parser parser;            ///< Protocol frame parser
+
+	/// Called upon reception of a single full message
+	bool (*on_message) (void *user_data, const void *data, size_t len);
+
+	/// Write a chunk of data to the stream
+	void (*write_cb) (void *user_data, const void *data, size_t len);
+
+	// TODO: close_cb
+
+	void *user_data;                    ///< User data for callbacks
+};
+
+static bool
+ws_handler_on_frame (void *user_data, const struct ws_parser *parser)
+{
+	struct ws_handler *self = user_data;
+	// TODO: handle pings and what not
+	// TODO: validate the message
+
+	return self->on_message (self->user_data,
+		self->parser.input.str, self->parser.payload_len);
+}
+
+static void
+ws_handler_init (struct ws_handler *self)
+{
+	memset (self, 0, sizeof *self);
+
+	http_parser_init (&self->hp, HTTP_REQUEST);
+	self->hp.data = self;
+
+	str_init (&self->field);
+	str_init (&self->value);
+	str_map_init (&self->headers);
+	self->headers.free = free;
+	// TODO: set headers.key_strxfrm?
+	str_init (&self->url);
+
+	ws_parser_init (&self->parser);
+	self->parser.on_frame = ws_handler_on_frame;
+}
+
+static void
+ws_handler_free (struct ws_handler *self)
+{
+	str_free (&self->field);
+	str_free (&self->value);
+	str_map_free (&self->headers);
+	str_free (&self->url);
+	ws_parser_free (&self->parser);
+}
+
+static void
+ws_handler_on_header_read (struct ws_handler *self)
+{
+	// TODO: some headers can appear more than once, concatenate their values;
+	//   for example "Sec-WebSocket-Version"
+	str_map_set (&self->headers, self->field.str, self->value.str);
+}
+
+static int
+ws_handler_on_header_field (http_parser *parser, const char *at, size_t len)
+{
+	struct ws_handler *self = parser->data;
+	if (self->parsing_header_value)
+	{
+		ws_handler_on_header_read (self);
+		str_reset (&self->field);
+		str_reset (&self->value);
+	}
+	str_append_data (&self->field, at, len);
+	self->parsing_header_value = false;
+	return 0;
+}
+
+static int
+ws_handler_on_header_value (http_parser *parser, const char *at, size_t len)
+{
+	struct ws_handler *self = parser->data;
+	str_append_data (&self->value, at, len);
+	self->parsing_header_value = true;
+	return 0;
+}
+
+static int
+ws_handler_on_headers_complete (http_parser *parser)
+{
+	// Just return 1 to tell the parser we don't want to parse any body;
+	// the parser should have found an upgrade request for WebSockets
+	(void) parser;
+	return 1;
+}
+
+static int
+ws_handler_on_url (http_parser *parser, const char *at, size_t len)
+{
+	struct ws_handler *self = parser->data;
+	str_append_data (&self->value, at, len);
+	return 0;
+}
+
+static bool
+ws_handler_finish_handshake (struct ws_handler *self)
+{
+	// TODO: probably factor this block out into its own function
+	// TODO: check if everything seems to be right
+	if (self->hp.method != HTTP_GET
+	 || self->hp.http_major != 1
+	 || self->hp.http_minor != 1)
+		; // TODO: error (maybe send a frame depending on conditions)
+
+	const char *upgrade  = str_map_find (&self->headers, "Upgrade");
+
+	const char *key      = str_map_find (&self->headers, SEC_WS_KEY);
+	const char *version  = str_map_find (&self->headers, SEC_WS_VERSION);
+	const char *protocol = str_map_find (&self->headers, SEC_WS_PROTOCOL);
+
+	struct str response;
+	str_init (&response);
+	str_append (&response, "HTTP/1.1 101 Switching Protocols\r\n");
+	str_append (&response, "Upgrade: websocket\r\n");
+	str_append (&response, "Connection: Upgrade\r\n");
+
+	// TODO: prepare the rest of the headers
+
+	// TODO: we should ideally check that this is a 16-byte base64-encoded
+	//   value; do we also have to strip surrounding whitespace?
+	char *response_key = ws_encode_response_key (key);
+	str_append_printf (&response, SEC_WS_ACCEPT ": %s\r\n", response_key);
+	free (response_key);
+
+	str_append (&response, "\r\n");
+	self->write_cb (self->user_data, response.str, response.len);
+	str_free (&response);
+	return true;
+}
+
+static bool
+ws_handler_push (struct ws_handler *self, const void *data, size_t len)
+{
+	if (self->state == WS_HANDLER_WEBSOCKETS)
+		return ws_parser_push (&self->parser, data, len);
+
+	// The handshake hasn't been done yet, process HTTP headers
+	static const http_parser_settings http_settings =
+	{
+		.on_header_field     = ws_handler_on_header_field,
+		.on_header_value     = ws_handler_on_header_value,
+		.on_headers_complete = ws_handler_on_headers_complete,
+		.on_url              = ws_handler_on_url,
+	};
+
+	size_t n_parsed = http_parser_execute (&self->hp,
+		&http_settings, data, len);
+
+	if (self->hp.upgrade)
+	{
+		if (len - n_parsed)
+		{
+			// TODO: error: the handshake hasn't been finished, yet there
+			//   is more data to process after the headers
+		}
+
+		if (!ws_handler_finish_handshake (self))
+			return false;
+
+		self->state = WS_HANDLER_WEBSOCKETS;
+		return true;
+	}
+	else if (n_parsed != len || HTTP_PARSER_ERRNO (&self->hp) != HPE_OK)
+	{
+		// TODO: error
+		// print_debug (..., http_errno_description
+		//   (HTTP_PARSER_ERRNO (&self->hp));
+	}
+
+	// TODO: make double sure to handle the case of !upgrade
+	return true;
+}
+
 // --- Server ------------------------------------------------------------------
 
 static struct config_item g_config_table[] =
@@ -1736,7 +2216,7 @@ client_scgi_write (void *user_data, const void *data, size_t len)
 static void
 client_scgi_close (void *user_data)
 {
-	// XXX: this rather really means "close me [the request]"
+	// NOTE: this rather really means "close me [the request]"
 	struct client *client = user_data;
 	client_remove (client);
 }
@@ -1815,23 +2295,56 @@ static struct client_impl g_client_scgi =
 
 // - - WebSockets  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
+struct client_ws
+{
+	struct ws_handler handler;          ///< WebSockets connection handler
+};
+
+static void
+client_ws_write (void *user_data, const void *data, size_t len)
+{
+	struct client *client = user_data;
+	client_write (client, data, len);
+}
+
+static bool
+client_ws_on_message (void *user_data, const void *data, size_t len)
+{
+	struct client *client = user_data;
+	struct client_ws *self = client->impl_data;
+
+	// TODO: do something about the message
+	return true;
+}
+
 static void
 client_ws_init (struct client *client)
 {
-	// TODO
+	struct client_ws *self = xmalloc (sizeof *self);
+	client->impl_data = self;
+
+	ws_handler_init (&self->handler);
+	self->handler.write_cb   = client_ws_write;
+	self->handler.on_message = client_ws_on_message;
+	self->handler.user_data  = client;
+	// TODO: configure the handler some more, e.g. regarding the protocol
 }
 
 static void
 client_ws_destroy (struct client *client)
 {
-	// TODO
+	struct client_ws *self = client->impl_data;
+	client->impl_data = NULL;
+
+	ws_handler_free (&self->handler);
+	free (self);
 }
 
 static bool
 client_ws_push (struct client *client, const void *data, size_t len)
 {
-	// TODO: first push everything into a http_parser, then after a protocol
-	//   upgrade start parsing the WebSocket frames themselves
+	struct client_ws *self = client->impl_data;
+	return ws_handler_push (&self->handler, data, len);
 }
 
 static struct client_impl g_client_ws =

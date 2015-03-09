@@ -11,6 +11,8 @@ gist of it is actually very simple -- run some stuff on new git commits.
 
 `acid' will provide a JSON-RPC 2.0 service for frontends over FastCGI, SCGI, or
 WebSockets, as well as a webhook endpoint for notifications about new commits.
+The daemon is supposed to be "firewalled" by a normal HTTP server and it will
+not provide TLS support to secure the communications.
 
 `acid' will be able to tell you about build results via e-mail and/or IRC.
 
