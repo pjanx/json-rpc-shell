@@ -1203,9 +1203,7 @@ ws_parser_push (struct ws_parser *self, const void *data, size_t len)
 		else if (self->payload_len == 126)
 			self->state = WS_PARSER_PAYLOAD_LEN_16;
 		else
-			self->state = self->is_masked
-				? WS_PARSER_MASK
-				: WS_PARSER_PAYLOAD;
+			self->state = WS_PARSER_MASK;
 
 		str_remove_slice (&self->input, 0, 2);
 		break;
@@ -1217,9 +1215,7 @@ ws_parser_push (struct ws_parser *self, const void *data, size_t len)
 		(void) msg_unpacker_u16 (&unpacker, &u16);
 		self->payload_len = u16;
 
-		self->state = self->is_masked
-			? WS_PARSER_MASK
-			: WS_PARSER_PAYLOAD;
+		self->state = WS_PARSER_MASK;
 		str_remove_slice (&self->input, 0, 2);
 		break;
 
@@ -1229,13 +1225,16 @@ ws_parser_push (struct ws_parser *self, const void *data, size_t len)
 
 		(void) msg_unpacker_u64 (&unpacker, &self->payload_len);
 
-		self->state = self->is_masked
-			? WS_PARSER_MASK
-			: WS_PARSER_PAYLOAD;
+		self->state = WS_PARSER_MASK;
 		str_remove_slice (&self->input, 0, 8);
 		break;
 
 	case WS_PARSER_MASK:
+		if (!self->is_masked)
+		{
+			self->state = WS_PARSER_PAYLOAD;
+			break;
+		}
 		if (self->input.len < 4)
 			return true;
 
@@ -2416,52 +2415,53 @@ error:
 }
 
 static void
-on_client_available (EV_P_ ev_io *watcher, int revents)
+make_client (EV_P_ struct client_impl *impl, int sock_fd)
 {
 	struct server_context *ctx = ev_userdata (loop);
+	set_blocking (sock_fd, false);
+
+	struct client *client = xmalloc (sizeof *client);
+	client_init (client);
+	client->socket_fd = sock_fd;
+	client->impl = impl;
+
+	ev_io_init (&client->read_watcher,  on_client_ready, sock_fd, EV_READ);
+	ev_io_init (&client->write_watcher, on_client_ready, sock_fd, EV_WRITE);
+	client->read_watcher.data = client;
+	client->write_watcher.data = client;
+
+	// We're only interested in reading as the write queue is empty now
+	ev_io_start (EV_A_ &client->read_watcher);
+
+	// Initialize the higher-level implementation
+	client->impl->init (client);
+
+	LIST_PREPEND (ctx->clients, client);
+	ctx->n_clients++;
+}
+
+static void
+on_client_available (EV_P_ ev_io *watcher, int revents)
+{
 	struct listener *listener = watcher->data;
 	(void) revents;
 
 	while (true)
 	{
 		int sock_fd = accept (watcher->fd, NULL, NULL);
-		if (sock_fd == -1)
-		{
-			if (errno == EAGAIN)
-				break;
-			if (errno == EINTR
-			 || errno == ECONNABORTED)
-				continue;
-
-			// Stop accepting connections to prevent busy looping
-			ev_io_stop (EV_A_ watcher);
-
-			print_fatal ("%s: %s", "accept", strerror (errno));
-			// TODO: initiate_quit (ctx);
+		if (sock_fd != -1)
+			make_client (EV_A_ listener->impl, sock_fd);
+		else if (errno == EAGAIN)
+			return;
+		else if (errno != EINTR && errno != ECONNABORTED)
 			break;
-		}
-
-		set_blocking (sock_fd, false);
-
-		struct client *client = xmalloc (sizeof *client);
-		client_init (client);
-		client->socket_fd = sock_fd;
-		client->impl = listener->impl;
-
-		ev_io_init (&client->read_watcher,  on_client_ready, sock_fd, EV_READ);
-		ev_io_init (&client->write_watcher, on_client_ready, sock_fd, EV_WRITE);
-		client->read_watcher.data = client;
-		client->write_watcher.data = client;
-
-		// We're only interested in reading as the write queue is empty now
-		ev_io_start (EV_A_ &client->read_watcher);
-
-		// Initialize the higher-level implementation
-		client->impl->init (client);
-
-		LIST_PREPEND (ctx->clients, client);
-		ctx->n_clients++;
 	}
+
+	// Stop accepting connections to prevent busy looping
+	ev_io_stop (EV_A_ watcher);
+
+	print_fatal ("%s: %s", "accept", strerror (errno));
+	// TODO: initiate_quit (ctx);
 }
 
 // --- Application setup -------------------------------------------------------
@@ -2520,7 +2520,7 @@ listener_finish (struct addrinfo *gai_iter)
 
 static void
 listener_add (struct server_context *ctx, const char *host, const char *port,
-	struct addrinfo *gai_hints, struct client_impl *impl)
+	const struct addrinfo *gai_hints, struct client_impl *impl)
 {
 	struct addrinfo *gai_result, *gai_iter;
 	int err = getaddrinfo (host, port, gai_hints, &gai_result);
@@ -2553,29 +2553,27 @@ listener_add (struct server_context *ctx, const char *host, const char *port,
 static bool
 setup_listen_fds (struct server_context *ctx, struct error **e)
 {
+	static const struct addrinfo gai_hints =
+	{
+		.ai_socktype = SOCK_STREAM,
+		.ai_flags = AI_PASSIVE,
+	};
+
 	const char *bind_host = str_map_find (&ctx->config, "bind_host");
+
 	const char *port_fcgi = str_map_find (&ctx->config, "port_fastcgi");
 	const char *port_scgi = str_map_find (&ctx->config, "port_scgi");
 	const char *port_ws   = str_map_find (&ctx->config, "port_ws");
-
-	struct addrinfo gai_hints;
-	memset (&gai_hints, 0, sizeof gai_hints);
-
-	gai_hints.ai_socktype = SOCK_STREAM;
-	gai_hints.ai_flags = AI_PASSIVE;
 
 	struct str_vector ports_fcgi;  str_vector_init (&ports_fcgi);
 	struct str_vector ports_scgi;  str_vector_init (&ports_scgi);
 	struct str_vector ports_ws;    str_vector_init (&ports_ws);
 
-	if (port_fcgi)
-		split_str_ignore_empty (port_fcgi, ',', &ports_fcgi);
-	if (port_scgi)
-		split_str_ignore_empty (port_scgi, ',', &ports_scgi);
-	if (port_ws)
-		split_str_ignore_empty (port_ws,   ',', &ports_ws);
+	if (port_fcgi)  split_str_ignore_empty (port_fcgi, ',', &ports_fcgi);
+	if (port_scgi)  split_str_ignore_empty (port_scgi, ',', &ports_scgi);
+	if (port_ws)    split_str_ignore_empty (port_ws,   ',', &ports_ws);
 
-	size_t n_ports = ports_fcgi.len + ports_scgi.len;
+	size_t n_ports = ports_fcgi.len + ports_scgi.len + ports_ws.len;
 	ctx->listeners = xcalloc (n_ports, sizeof *ctx->listeners);
 
 	for (size_t i = 0; i < ports_fcgi.len; i++)
