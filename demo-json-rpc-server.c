@@ -114,6 +114,21 @@ str_pack_u64 (struct str *self, uint64_t x)
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
+static int
+tolower_ascii (int c)
+{
+	return c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c;
+}
+
+static size_t
+tolower_ascii_strxfrm (char *dest, const char *src, size_t n)
+{
+	size_t len = strlen (src);
+	while (n-- && (*dest++ = tolower_ascii (*src++)))
+		;
+	return len;
+}
+
 static void
 base64_encode (const void *data, size_t len, struct str *output)
 {
@@ -547,6 +562,8 @@ struct fcgi_request
 struct fcgi_muxer
 {
 	struct fcgi_parser parser;          ///< FastCGI message parser
+
+	// TODO: bool quitting; that causes us to reject all requests?
 
 	/// Requests assigned to request IDs
 	// TODO: allocate this dynamically
@@ -1143,7 +1160,7 @@ ws_parser_free (struct ws_parser *self)
 }
 
 static void
-ws_parser_demask (struct ws_parser *self)
+ws_parser_unmask (struct ws_parser *self)
 {
 	// Yes, this could be made faster.  For example by reading the mask in
 	// native byte ordering and applying it directly here.
@@ -1249,7 +1266,7 @@ ws_parser_push (struct ws_parser *self, const void *data, size_t len)
 			return true;
 
 		if (self->is_masked)
-			ws_parser_demask (self);
+			ws_parser_unmask (self);
 		if (!self->on_frame (self->user_data, self))
 			return false;
 
@@ -1289,6 +1306,9 @@ struct ws_handler
 
 	struct ws_parser parser;            ///< Protocol frame parser
 
+	// TODO: bool closing;
+	// TODO: a configurable max_payload_len initialized by _init()
+
 	/// Called upon reception of a single full message
 	bool (*on_message) (void *user_data, const void *data, size_t len);
 
@@ -1306,7 +1326,7 @@ ws_handler_on_frame (void *user_data, const struct ws_parser *parser)
 	struct ws_handler *self = user_data;
 	// TODO: handle pings and what not
 	// TODO: validate the message
-
+	// TODO: first concatenate all parts of the message
 	return self->on_message (self->user_data,
 		self->parser.input.str, self->parser.payload_len);
 }
@@ -1323,7 +1343,7 @@ ws_handler_init (struct ws_handler *self)
 	str_init (&self->value);
 	str_map_init (&self->headers);
 	self->headers.free = free;
-	// TODO: set headers.key_strxfrm?
+	self->headers.key_xfrm = tolower_ascii_strxfrm;
 	str_init (&self->url);
 
 	ws_parser_init (&self->parser);
@@ -1613,6 +1633,21 @@ validate_json_rpc_content_type (const char *type)
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
+typedef json_t *(*json_rpc_handler_fn) (struct server_context *, json_t *);
+
+struct json_rpc_handler_info
+{
+	const char *method_name;            ///< JSON-RPC method name
+	json_rpc_handler_fn handler;        ///< Method handler
+};
+
+static int
+json_rpc_handler_info_cmp (const void *first, const void *second)
+{
+	return strcmp (((struct json_rpc_handler_info *) first)->method_name,
+		((struct json_rpc_handler_info *) second)->method_name);
+}
+
 // TODO: a method that queues up a ping over IRC: this has to be owned by the
 //   server context as a background job that removes itself upon completion.
 
@@ -1628,6 +1663,13 @@ json_rpc_ping (struct server_context *ctx, json_t *params)
 static json_t *
 process_json_rpc_request (struct server_context *ctx, json_t *request)
 {
+	// A list of all available methods; this list has to be ordered.
+	// Eventually it might be better to move this into a map in the context.
+	static struct json_rpc_handler_info handlers[] =
+	{
+		{ "ping", json_rpc_ping },
+	};
+
 	if (!json_is_object (request))
 		return json_rpc_response (NULL, NULL,
 			json_rpc_error (JSON_RPC_ERROR_INVALID_REQUEST, NULL));
@@ -1650,14 +1692,14 @@ process_json_rpc_request (struct server_context *ctx, json_t *request)
 		return json_rpc_response (id, NULL,
 			json_rpc_error (JSON_RPC_ERROR_INVALID_REQUEST, NULL));
 
-	// TODO: add a more extensible mechanism
-	json_t *response = NULL;
-	if (!strcmp (method, "ping"))
-		response = json_rpc_ping (ctx, params);
-	else
+	struct json_rpc_handler_info key = { .method_name = method };
+	struct json_rpc_handler_info *handler = bsearch (&key, handlers,
+		N_ELEMENTS (handlers), sizeof key, json_rpc_handler_info_cmp);
+	if (!handler)
 		return json_rpc_response (id, NULL,
 			json_rpc_error (JSON_RPC_ERROR_METHOD_NOT_FOUND, NULL));
 
+	json_t *response = handler->handler (ctx, params);
 	if (id)
 		return response;
 
@@ -1808,11 +1850,11 @@ request_start (struct request *self, struct str_map *headers)
 static bool
 request_push (struct request *self, const void *data, size_t len)
 {
-	if (soft_assert (self->handler))
-		return self->handler->push_cb (self, data, len);
+	if (!soft_assert (self->handler))
+		// No handler, nothing to do with any data
+		return false;
 
-	// No handler, nothing to do with any data
-	return false;
+	return self->handler->push_cb (self, data, len);
 }
 
 // --- Requests handlers -------------------------------------------------------
@@ -1841,16 +1883,19 @@ request_handler_json_rpc_push
 {
 	struct str *buf = request->handler_data;
 	if (len)
-		str_append_data (buf, data, len);
-	else
 	{
-		struct str response;
-		str_init (&response);
-		process_json_rpc (request->ctx, buf->str, buf->len, &response);
-		request->write_cb (request->user_data, response.str, response.len);
-		str_free (&response);
+		str_append_data (buf, data, len);
+		return true;
 	}
-	return true;
+
+	struct str response;
+	str_init (&response);
+	str_append (&response, "Status: 200 OK\n");
+	str_append_printf (&response, "Content-Type: %s\n\n", "application/json");
+	process_json_rpc (request->ctx, buf->str, buf->len, &response);
+	request->write_cb (request->user_data, response.str, response.len);
+	str_free (&response);
+	return false;
 }
 
 static void
@@ -1872,7 +1917,58 @@ struct request_handler g_request_handler_json_rpc =
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-// TODO: refactor this spaghetti-tier code
+static char *
+canonicalize_url_path (const char *path)
+{
+	struct str_vector v;
+	str_vector_init (&v);
+	split_str_ignore_empty (path, '/', &v);
+
+	struct str_vector canonical;
+	str_vector_init (&canonical);
+
+	// So that the joined path always begins with a slash
+	str_vector_add (&canonical, "");
+
+	for (size_t i = 0; i < v.len; i++)
+	{
+		const char *dir = v.vector[i];
+		if (!strcmp (dir, "."))
+			continue;
+
+		if (strcmp (dir, ".."))
+			str_vector_add (&canonical, dir);
+		else if (canonical.len)
+			// ".." never goes above the root
+			str_vector_remove (&canonical, canonical.len - 1);
+	}
+	str_vector_free (&v);
+
+	char *joined = join_str_vector (&canonical, '/');
+	str_vector_free (&canonical);
+	return joined;
+}
+
+static char *
+detect_magic (const void *data, size_t len)
+{
+	magic_t cookie;
+	char *mime_type = NULL;
+
+	if (!(cookie = magic_open (MAGIC_MIME)))
+		return NULL;
+
+	const char *magic = NULL;
+	if (!magic_load (cookie, NULL)
+	 && (magic = magic_buffer (cookie, data, len)))
+		mime_type = xstrdup (magic);
+	else
+		print_debug ("MIME type detection failed: %s", magic_error (cookie));
+
+	magic_close (cookie);
+	return mime_type;
+}
+
 static bool
 request_handler_static_try_handle
 	(struct request *request, struct str_map *headers)
@@ -1897,34 +1993,9 @@ request_handler_static_try_handle
 		return false;
 	}
 
-	struct str_vector v;
-	str_vector_init (&v);
-	split_str_ignore_empty (path_info, '/', &v);
-
-	struct str_vector resolved;
-	str_vector_init (&resolved);
-
-	// So that the joined path begins with a slash
-	str_vector_add (&resolved, "");
-
 	// We need to filter the path to stay in our root
 	// Being able to read /etc/passwd would be rather embarrasing
-	for (size_t i = 0; i < v.len; i++)
-	{
-		const char *dir = v.vector[i];
-		if (!strcmp (dir, "."))
-			continue;
-
-		if (strcmp (dir, ".."))
-			str_vector_add (&resolved, dir);
-		else if (resolved.len)
-			str_vector_remove (&resolved, resolved.len - 1);
-	}
-	str_vector_free (&v);
-
-	char *suffix = join_str_vector (&resolved, '/');
-	str_vector_free (&resolved);
-
+	char *suffix = canonicalize_url_path (path_info);
 	char *path = xstrdup_printf ("%s%s", root, suffix);
 
 	FILE *fp = fopen (path, "rb");
@@ -1953,22 +2024,9 @@ request_handler_static_try_handle
 	// Try to detect the Content-Type from the actual contents
 	char *mime_type = NULL;
 	if ((len = fread (buf, 1, sizeof buf, fp)))
-	{
-		magic_t cookie;
-		const char *magic = NULL;
-		if ((cookie = magic_open (MAGIC_MIME)))
-		{
-			if (!magic_load (cookie, NULL)
-			 && (magic = magic_buffer (cookie, buf, len)))
-				mime_type = xstrdup (magic);
-			magic_close (cookie);
-		}
-	}
+		mime_type = detect_magic (buf, len);
 	if (!mime_type)
-	{
-		print_debug ("MIME type detection failed");
 		mime_type = xstrdup ("application/octet_stream");
-	}
 
 	struct str response;
 	str_init (&response);
@@ -2036,6 +2094,15 @@ struct client_impl
 {
 	/// Initialize the client as needed
 	void (*init) (struct client *client);
+
+	// TODO: a method for graceful shutdown which will, in the case of
+	//   WebSockets, actually send a "shutdown" close packet, and in the case
+	//   of FastCGI will FCGI_END_REQUEST everything with FCGI_REQUEST_COMPLETE
+	//   and FCGI_OVERLOADED all incoming requests in the meantime (the FastCGI
+	//   specification isn't very clear about how we should respond to this).
+	//
+	//   We then should set up a timer for about a second until we kill all
+	//   clients for good.
 
 	/// Do any additional cleanup
 	void (*destroy) (struct client *client);
@@ -2370,28 +2437,23 @@ client_read_loop (EV_P_ struct client *client, ev_io *watcher)
 	while (true)
 	{
 		ssize_t n_read = recv (watcher->fd, buf, sizeof buf, 0);
-		if (n_read < 0)
+		if (n_read >= 0)
 		{
-			if (errno == EAGAIN)
+			if (!client->impl->push (client, buf, n_read))
+				return false;
+			if (!n_read)
 				break;
-			if (errno == EINTR)
-				continue;
-
-			return false;
 		}
-
-		if (!client->impl->push (client, buf, n_read))
-			return false;
-
-		if (!n_read)
-		{
-			// Don't receive the EOF condition repeatedly
-			ev_io_stop (EV_A_ watcher);
-
-			// We can probably still write, so let's just return
+		else if (errno == EAGAIN)
 			return true;
-		}
+		else if (errno != EINTR)
+			return false;
 	}
+
+	// Don't receive the EOF condition repeatedly
+	ev_io_stop (EV_A_ watcher);
+
+	// We can probably still write, so let's just return
 	return true;
 }
 
@@ -2402,15 +2464,18 @@ on_client_ready (EV_P_ ev_io *watcher, int revents)
 
 	if (revents & EV_READ)
 		if (!client_read_loop (EV_A_ client, watcher))
-			goto error;
+			goto close;
 	if (revents & EV_WRITE)
+		// TODO: shouldn't we at least provide an option (to be used by a client
+		//   implementation if it so desires) to close the connection once we've
+		//   finished flushing the write queue?  This should probably even be
+		//   the default behaviour, as it's fairly uncommon for clients to
+		//   shutdown the socket for writes while leaving it open for reading.
 		if (!flush_queue (&client->write_queue, watcher))
-			goto error;
+			goto close;
 	return;
 
-error:
-	// The callback also could have just told us to stop reading,
-	// this is not necessarily an error condition
+close:
 	client_remove (client);
 }
 
@@ -2479,7 +2544,7 @@ parse_config (struct server_context *ctx, struct error **e)
 }
 
 static int
-listener_finish (struct addrinfo *gai_iter)
+listener_bind (struct addrinfo *gai_iter)
 {
 	int fd = socket (gai_iter->ai_family,
 		gai_iter->ai_socktype, gai_iter->ai_protocol);
@@ -2536,7 +2601,7 @@ listener_add (struct server_context *ctx, const char *host, const char *port,
 	int fd;
 	for (gai_iter = gai_result; gai_iter; gai_iter = gai_iter->ai_next)
 	{
-		if ((fd = listener_finish (gai_iter)) == -1)
+		if ((fd = listener_bind (gai_iter)) == -1)
 			continue;
 		set_blocking (fd, false);
 
@@ -2550,6 +2615,15 @@ listener_add (struct server_context *ctx, const char *host, const char *port,
 	freeaddrinfo (gai_result);
 }
 
+static void
+get_ports_from_config (struct server_context *ctx,
+	const char *key, struct str_vector *out)
+{
+	const char *ports;
+	if ((ports = str_map_find (&ctx->config, key)))
+		split_str_ignore_empty (ports, ',', out);
+}
+
 static bool
 setup_listen_fds (struct server_context *ctx, struct error **e)
 {
@@ -2559,20 +2633,15 @@ setup_listen_fds (struct server_context *ctx, struct error **e)
 		.ai_flags = AI_PASSIVE,
 	};
 
-	const char *bind_host = str_map_find (&ctx->config, "bind_host");
-
-	const char *port_fcgi = str_map_find (&ctx->config, "port_fastcgi");
-	const char *port_scgi = str_map_find (&ctx->config, "port_scgi");
-	const char *port_ws   = str_map_find (&ctx->config, "port_ws");
-
 	struct str_vector ports_fcgi;  str_vector_init (&ports_fcgi);
 	struct str_vector ports_scgi;  str_vector_init (&ports_scgi);
 	struct str_vector ports_ws;    str_vector_init (&ports_ws);
 
-	if (port_fcgi)  split_str_ignore_empty (port_fcgi, ',', &ports_fcgi);
-	if (port_scgi)  split_str_ignore_empty (port_scgi, ',', &ports_scgi);
-	if (port_ws)    split_str_ignore_empty (port_ws,   ',', &ports_ws);
+	get_ports_from_config (ctx, "port_fastcgi", &ports_fcgi);
+	get_ports_from_config (ctx, "port_scgi",    &ports_scgi);
+	get_ports_from_config (ctx, "port_ws",      &ports_ws);
 
+	const char *bind_host = str_map_find (&ctx->config, "bind_host");
 	size_t n_ports = ports_fcgi.len + ports_scgi.len + ports_ws.len;
 	ctx->listeners = xcalloc (n_ports, sizeof *ctx->listeners);
 
@@ -2615,6 +2684,8 @@ static void
 daemonize (void)
 {
 	// TODO: create and lock a PID file?
+	// TODO: add the path for the PID file into "struct server_context",
+	//   see the UNIX bible for more details on how to proceed.
 	print_status ("daemonizing...");
 
 	if (chdir ("/"))
