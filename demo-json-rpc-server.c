@@ -1496,6 +1496,7 @@ static struct config_item g_config_table[] =
 	{ "port_fastcgi",    "9000",            "Port to bind for FastCGI"       },
 	{ "port_scgi",       NULL,              "Port to bind for SCGI"          },
 	{ "port_ws",         NULL,              "Port to bind for WebSockets"    },
+	{ "pid_file",        NULL,              "Full path for the PID file"     },
 	{ "static_root",     NULL,              "The root for static content"    },
 	{ NULL,              NULL,              NULL                             }
 };
@@ -2668,6 +2669,51 @@ setup_listen_fds (struct server_context *ctx, struct error **e)
 	return true;
 }
 
+static bool
+lock_pid_file (struct server_context *ctx, struct error **e)
+{
+	const char *path = str_map_find (&ctx->config, "pid_file");
+	if (!path)
+		return true;
+
+	int fd = open (path, O_RDWR | O_CREAT,
+		S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH /* 644 */);
+	if (fd < 0)
+	{
+		error_set (e, "can't open `%s': %s", path, strerror (errno));
+		return false;
+	}
+
+	struct flock lock =
+	{
+		.l_type = F_WRLCK,
+		.l_start = 0,
+		.l_whence = SEEK_SET,
+		.l_len = 0,
+	};
+	if (fcntl (fd, F_SETLK, &lock))
+	{
+		error_set (e, "can't lock `%s': %s", path, strerror (errno));
+		return false;
+	}
+
+	struct str pid;
+	str_init (&pid);
+	str_append_printf (&pid, "%ld", (long) getpid ());
+
+	if (ftruncate (fd, 0)
+	 || write (fd, pid.str, pid.len) != (ssize_t) pid.len)
+	{
+		error_set (e, "can't write to `%s': %s", path, strerror (errno));
+		return false;
+	}
+	str_free (&pid);
+
+	// Intentionally not closing the file descriptor; it must stay alive
+	// for the entire life of the application
+	return true;
+}
+
 // --- Main program ------------------------------------------------------------
 
 static void
@@ -2683,9 +2729,6 @@ on_termination_signal (EV_P_ ev_signal *handle, int revents)
 static void
 daemonize (void)
 {
-	// TODO: create and lock a PID file?
-	// TODO: add the path for the PID file into "struct server_context",
-	//   see the UNIX bible for more details on how to proceed.
 	print_status ("daemonizing...");
 
 	if (chdir ("/"))
@@ -2708,7 +2751,10 @@ daemonize (void)
 	openlog (PROGRAM_NAME, LOG_NDELAY | LOG_NOWAIT | LOG_PID, 0);
 	g_log_message_real = log_message_syslog;
 
-	// XXX: we may close our own descriptors this way, crippling ourselves
+	// XXX: we may close our own descriptors this way, crippling ourselves;
+	//   there is no real guarantee that we will start with all three
+	//   descriptors open.  In theory we could try to enumerate the descriptors
+	//   at the start of main().
 	for (int i = 0; i < 3; i++)
 		xclose (i);
 
@@ -2803,6 +2849,7 @@ main (int argc, char *argv[])
 	LIST_PREPEND (ctx.handlers, &g_request_handler_json_rpc);
 
 	if (!parse_config (&ctx, &e)
+	 || !lock_pid_file (&ctx, &e)
 	 || !setup_listen_fds (&ctx, &e))
 	{
 		print_error ("%s", e->message);
