@@ -36,7 +36,8 @@ configure_file (${PROJECT_SOURCE_DIR}/config.h.in ${PROJECT_BINARY_DIR}/config.h
 include_directories (${PROJECT_BINARY_DIR})
 
 # Build the executables
-add_executable (demo-json-rpc-server demo-json-rpc-server.c)
+add_executable (demo-json-rpc-server
+	demo-json-rpc-server.c http-parser/http_parser.c)
 target_link_libraries (demo-json-rpc-server ${project_libraries})
 
 # The files to be installed

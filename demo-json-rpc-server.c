@@ -38,9 +38,7 @@
 #include <jansson.h>
 #include <magic.h>
 
-// FIXME: don't include the implementation, include the header and compile
-//   the implementation separately
-#include "http-parser/http_parser.c"
+#include "http-parser/http_parser.h"
 
 // --- Extensions to liberty ---------------------------------------------------
 
@@ -129,6 +127,17 @@ tolower_ascii_strxfrm (char *dest, const char *src, size_t n)
 	return len;
 }
 
+static int
+strcasecmp_ascii (const char *a, const char *b)
+{
+	while (*a && *b)
+		if (tolower_ascii (*a) != tolower_ascii (*b))
+			break;
+	return *a - *b;
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
 static void
 base64_encode (const void *data, size_t len, struct str *output)
 {
@@ -167,6 +176,211 @@ base64_encode (const void *data, size_t len, struct str *output)
 	default:
 		break;
 	}
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+// Basic tokenizer for HTTP headers, to be used in various parsers.
+// The input should already be unwrapped.
+
+enum http_tokenizer_field
+{
+	HTTP_T_EOF,                         ///< Input error
+	HTTP_T_ERROR,                       ///< End of input
+
+	HTTP_T_TOKEN,                       ///< "token"
+	HTTP_T_QUOTED_STRING,               ///< "quoted-string"
+	HTTP_T_SEPARATOR                    ///< "separators"
+};
+
+struct http_tokenizer
+{
+	const char *input;                  ///< The input string
+	size_t input_len;                   ///< Length of the input
+	size_t offset;                      ///< Position in the input
+
+	char separator;                     ///< The separator character
+	struct str string;                  ///< "token" / "quoted-string" content
+};
+
+static void
+http_tokenizer_init (struct http_tokenizer *self, const char *input)
+{
+	memset (self, 0, sizeof *self);
+	self->input = input;
+	self->input_len = strlen (input);
+
+	str_init (&self->string);
+}
+
+static void
+http_tokenizer_free (struct http_tokenizer *self)
+{
+	str_free (&self->string);
+}
+
+static bool
+http_tokenizer_is_ctl (int c)
+{
+	return (c >= 0 && c <= 31) || c == 127;
+}
+
+static bool
+http_tokenizer_is_char (int c)
+{
+	return c >= 0 && c <= 127;
+}
+
+static enum http_tokenizer_field
+http_tokenizer_quoted_string (struct http_tokenizer *self)
+{
+	bool quoted_pair = false;
+	while (self->offset < self->input_len)
+	{
+		int c = self->input[self->offset++];
+		if (quoted_pair)
+		{
+			if (!http_tokenizer_is_char (c))
+				return HTTP_T_ERROR;
+
+			str_append_c (&self->string, c);
+			quoted_pair = false;
+		}
+		else if (c == '\\')
+			quoted_pair = true;
+		else if (c == '"')
+			return HTTP_T_QUOTED_STRING;
+		else if (http_tokenizer_is_ctl (c))
+			return HTTP_T_ERROR;
+		else
+			str_append_c (&self->string, c);
+	}
+
+	// Premature end of input
+	return HTTP_T_ERROR;
+}
+
+static enum http_tokenizer_field
+http_tokenizer_next (struct http_tokenizer *self, bool skip_lws)
+{
+	const char *separators = "()<>@.;:\\\"/[]?={} \t";
+
+	str_reset (&self->string);
+	if (self->offset >= self->input_len)
+		return HTTP_T_EOF;
+
+	int c = self->input[self->offset++];
+
+	if (skip_lws)
+		while (c == ' ' || c == '\t')
+		{
+			if (self->offset >= self->input_len)
+				return HTTP_T_EOF;
+			c = self->input[self->offset++];
+		}
+
+	if (c == '"')
+		return http_tokenizer_quoted_string (self);
+
+	if (strchr (separators, c))
+	{
+		self->separator = c;
+		return HTTP_T_SEPARATOR;
+	}
+
+	if (!http_tokenizer_is_char (c)
+	 || http_tokenizer_is_ctl (c))
+		return HTTP_T_ERROR;
+
+	str_append_c (&self->string, c);
+	while (self->offset < self->input_len)
+	{
+		c = self->input[self->offset];
+		if (!http_tokenizer_is_char (c)
+		 || http_tokenizer_is_ctl (c)
+		 || strchr (separators, c))
+			break;
+
+		str_append_c (&self->string, c);
+		self->offset++;
+	}
+	return HTTP_T_TOKEN;
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+static bool
+http_parse_media_type_parameter
+	(struct http_tokenizer *t, struct str_map *parameters)
+{
+	bool result = false;
+	char *attribute = NULL;
+
+	if (http_tokenizer_next (t, true) != HTTP_T_TOKEN)
+		goto end;
+	attribute = xstrdup (t->string.str);
+
+	if (http_tokenizer_next (t, false) != HTTP_T_SEPARATOR
+	 || t->separator != '=')
+		goto end;
+
+	switch (http_tokenizer_next (t, false))
+	{
+	case HTTP_T_TOKEN:
+	case HTTP_T_QUOTED_STRING:
+		str_map_set (parameters, attribute, xstrdup (t->string.str));
+		result = true;
+	default:
+		break;
+	}
+
+end:
+	free (attribute);
+	return result;
+}
+
+/// Parser for Accept and Content-Type.  @a type and @a subtype may be non-NULL
+/// even if the function fails.  @a parameters should be case-insensitive.
+static bool
+http_parse_media_type (const char *media_type,
+	char **type, char **subtype, struct str_map *parameters)
+{
+	// The parsing is strict wrt. LWS as per RFC 2616 section 3.7
+
+	bool result = false;
+	struct http_tokenizer t;
+	http_tokenizer_init (&t, media_type);
+
+	if (http_tokenizer_next (&t, true) != HTTP_T_TOKEN)
+		goto end;
+	*type = xstrdup (t.string.str);
+
+	if (http_tokenizer_next (&t, false) != HTTP_T_SEPARATOR
+	 || t.separator != '/')
+		goto end;
+
+	if (http_tokenizer_next (&t, false) != HTTP_T_TOKEN)
+		goto end;
+	*subtype = xstrdup (t.string.str);
+
+	while (true)
+	switch (http_tokenizer_next (&t, true))
+	{
+	case HTTP_T_SEPARATOR:
+		if (t.separator != ';')
+			goto end;
+		if (!http_parse_media_type_parameter (&t, parameters))
+			goto end;
+		break;
+	case HTTP_T_EOF:
+		result = true;
+	default:
+		goto end;
+	}
+
+end:
+	http_tokenizer_free (&t);
+	return result;
 }
 
 // --- libev helpers -----------------------------------------------------------
@@ -1065,10 +1279,11 @@ scgi_parser_push (struct scgi_parser *self,
 
 #define WS_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
-#define SEC_WS_KEY       "Sec-WebSocket-Key"
-#define SEC_WS_ACCEPT    "Sec-WebSocket-Accept"
-#define SEC_WS_PROTOCOL  "Sec-WebSocket-Protocol"
-#define SEC_WS_VERSION   "Sec-WebSocket-Version"
+#define SEC_WS_KEY         "Sec-WebSocket-Key"
+#define SEC_WS_ACCEPT      "Sec-WebSocket-Accept"
+#define SEC_WS_PROTOCOL    "Sec-WebSocket-Protocol"
+#define SEC_WS_EXTENSIONS  "Sec-WebSocket-Extensions"
+#define SEC_WS_VERSION     "Sec-WebSocket-Version"
 
 #define WS_MAX_CONTROL_PAYLOAD_LEN  125
 
@@ -1290,10 +1505,6 @@ ws_parser_push (struct ws_parser *self, const void *data, size_t len)
 	}
 }
 
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
-// TODO: something to build frames for data
-
 // - - Server handler  - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 // WebSockets aren't CGI-compatible, therefore we must handle the initial HTTP
@@ -1304,7 +1515,8 @@ ws_parser_push (struct ws_parser *self, const void *data, size_t len)
 enum ws_handler_state
 {
 	WS_HANDLER_HANDSHAKE,               ///< Parsing HTTP
-	WS_HANDLER_WEBSOCKETS               ///< Parsing WebSockets frames
+	WS_HANDLER_OPEN,                    ///< Parsing WebSockets frames
+	WS_HANDLER_CLOSING                  ///< Closing the connection
 };
 
 struct ws_handler
@@ -1327,7 +1539,7 @@ struct ws_handler
 	unsigned ping_interval;             ///< Ping interval in seconds
 	uint64_t max_payload_len;           ///< Maximum length of any message
 
-	// TODO: bool closing; // XXX: rather a { OPEN, CLOSING } state?
+	// TODO: handshake_timeout
 	// TODO: a close timer
 
 	// TODO: a ping timer (when no pong is received by the second time the
@@ -1361,8 +1573,8 @@ struct ws_handler
 };
 
 static void
-ws_handler_send_control (struct ws_handler *self, enum ws_opcode opcode,
-	const void *data, size_t len)
+ws_handler_send_control (struct ws_handler *self,
+	enum ws_opcode opcode, const void *data, size_t len)
 {
 	if (len > WS_MAX_CONTROL_PAYLOAD_LEN)
 	{
@@ -1391,6 +1603,33 @@ ws_handler_fail (struct ws_handler *self, enum ws_status reason)
 // TODO: ws_handler_close() that behaves like ws_handler_fail() but doesn't
 //   ignore frames up to a corresponding close from the client.
 //   Read the RFC once again to see if we can really process the frames.
+
+// TODO: add support for fragmented responses
+static void
+ws_handler_send (struct ws_handler *self,
+	enum ws_opcode opcode, const void *data, size_t len)
+{
+	struct str header;
+	str_init (&header);
+	str_pack_u8 (&header, 0x80 | (opcode & 0x0F));
+
+	if (len > UINT16_MAX)
+	{
+		str_pack_u8 (&header, 127);
+		str_pack_u64 (&header, len);
+	}
+	else if (len > 125)
+	{
+		str_pack_u8 (&header, 126);
+		str_pack_u16 (&header, len);
+	}
+	else
+		str_pack_u8 (&header, len);
+
+	self->write_cb (self->user_data, header.str, header.len);
+	self->write_cb (self->user_data, data, len);
+	str_free (&header);
+}
 
 static bool
 ws_handler_on_frame_header (void *user_data, const struct ws_parser *parser)
@@ -1529,9 +1768,19 @@ ws_handler_free (struct ws_handler *self)
 static void
 ws_handler_on_header_read (struct ws_handler *self)
 {
-	// TODO: some headers can appear more than once, concatenate their values;
-	//   for example "Sec-WebSocket-Version"
-	str_map_set (&self->headers, self->field.str, self->value.str);
+	const char *field = self->field.str;
+	bool can_concat =
+		!strcasecmp_ascii (field, SEC_WS_PROTOCOL) ||
+		!strcasecmp_ascii (field, SEC_WS_EXTENSIONS);
+
+	const char *current = str_map_find (&self->headers, field);
+	if (can_concat && current)
+		str_map_set (&self->headers, field,
+			xstrdup_printf ("%s, %s", current, self->value.str));
+	else
+		// If the field cannot be concatenated, just overwrite the last value.
+		// Maybe we should issue a warning or something.
+		str_map_set (&self->headers, field, xstrdup (self->value.str));
 }
 
 static int
@@ -1576,48 +1825,104 @@ ws_handler_on_url (http_parser *parser, const char *at, size_t len)
 	return 0;
 }
 
+#define HTTP_101_SWITCHING_PROTOCOLS    "101 Switching Protocols"
+#define HTTP_400_BAD_REQUEST            "400 Bad Request"
+#define HTTP_405_METHOD_NOT_ALLOWED     "405 Method Not Allowed"
+#define HTTP_505_VERSION_NOT_SUPPORTED  "505 HTTP Version Not Supported"
+
+static void
+ws_handler_http_responsev (struct ws_handler *self,
+	const char *status, char *const *fields)
+{
+	hard_assert (status != NULL);
+
+	struct str response;
+	str_init (&response);
+	str_append_printf (&response, "HTTP/1.1 %s\r\n", status);
+
+	while (*fields)
+		str_append_printf (&response, "%s\r\n", *fields++);
+
+	str_append (&response, "Server: "
+		PROGRAM_NAME "/" PROGRAM_VERSION "\r\n\r\n");
+	self->write_cb (self->user_data, response.str, response.len);
+	str_free (&response);
+}
+
+static void
+ws_handler_http_response (struct ws_handler *self, const char *status, ...)
+{
+	struct str_vector v;
+	str_vector_init (&v);
+
+	va_list ap;
+	va_start (ap, status);
+
+	const char *s;
+	while ((s = va_arg (ap, const char *)))
+		str_vector_add (&v, s);
+
+	va_end (ap);
+
+	ws_handler_http_responsev (self, status, v.vector);
+	str_vector_free (&v);
+}
+
+#define FAIL_HANDSHAKE(status, ...)                                            \
+	BLOCK_START                                                                \
+		ws_handler_http_response (self, (status), __VA_ARGS__);                \
+		return false;                                                          \
+	BLOCK_END
+
 static bool
 ws_handler_finish_handshake (struct ws_handler *self)
 {
-	// TODO: probably factor this block out into its own function
-	// TODO: check if everything seems to be right
-	if (self->hp.method != HTTP_GET
-	 || self->hp.http_major != 1
-	 || self->hp.http_minor != 1)
-		; // TODO: error (maybe send a frame depending on conditions)
-	// ...mostly just 400 Bad Request
+	if (self->hp.http_major != 1 || self->hp.http_minor != 1)
+		FAIL_HANDSHAKE (HTTP_505_VERSION_NOT_SUPPORTED, NULL);
+	if (self->hp.method != HTTP_GET)
+		FAIL_HANDSHAKE (HTTP_405_METHOD_NOT_ALLOWED, "Allow: GET", NULL);
+
+	// Reject weird URLs specifying the schema and the host
+	struct http_parser_url url;
+	if (http_parser_parse_url (self->url.str, self->url.len, false, &url)
+	 || (url.field_set & (1 << UF_SCHEMA | 1 << UF_HOST | 1 << UF_PORT)))
+		FAIL_HANDSHAKE (HTTP_400_BAD_REQUEST, NULL);
 
 	const char *upgrade  = str_map_find (&self->headers, "Upgrade");
-
+	// TODO: we should ideally check that this is a 16-byte base64-encoded value
 	const char *key      = str_map_find (&self->headers, SEC_WS_KEY);
 	const char *version  = str_map_find (&self->headers, SEC_WS_VERSION);
 	const char *protocol = str_map_find (&self->headers, SEC_WS_PROTOCOL);
 
-	if (!upgrade || strcmp (upgrade, "websocket")
-	 || !version || strcmp (version, "13"))
-		; // TODO: error
-	// ... if the version doesn't match, we must send back a header indicating
-	// the version we do support
+	if (!upgrade || strcmp (upgrade, "websocket") || !version)
+		FAIL_HANDSHAKE (HTTP_400_BAD_REQUEST, NULL);
+	if (strcmp (version, "13"))
+		FAIL_HANDSHAKE (HTTP_400_BAD_REQUEST, SEC_WS_VERSION ": 13", NULL);
 
-	struct str response;
-	str_init (&response);
-	str_append (&response, "HTTP/1.1 101 Switching Protocols\r\n");
-	str_append (&response, "Upgrade: websocket\r\n");
-	str_append (&response, "Connection: Upgrade\r\n");
+	struct str_vector fields;
+	str_vector_init (&fields);
 
-	// TODO: prepare the rest of the headers
+	str_vector_add_args (&fields,
+		"Upgrade: websocket",
+		"Connection: Upgrade",
+		NULL);
 
-	// TODO: we should ideally check that this is a 16-byte base64-encoded value
 	char *response_key = ws_encode_response_key (key);
-	str_append_printf (&response, SEC_WS_ACCEPT ": %s\r\n", response_key);
+	str_vector_add_owned (&fields,
+		xstrdup_printf (SEC_WS_ACCEPT ": %s", response_key));
 	free (response_key);
 
-	str_append (&response, "\r\n");
-	self->write_cb (self->user_data, response.str, response.len);
-	str_free (&response);
+	// TODO: check and set Sec-Websocket-{Extensions,Protocol}
+
+	ws_handler_http_responsev (self,
+		HTTP_101_SWITCHING_PROTOCOLS, fields.vector);
+
+	str_vector_free (&fields);
 
 	// XXX: maybe we should start it earlier so that the handshake can
 	//   timeout as well.  ws_handler_connected()?
+	//
+	//   But it should rather be named "connect_timer"
 	ev_timer_start (EV_DEFAULT_ &self->ping_timer);
 	return true;
 }
@@ -1625,8 +1930,13 @@ ws_handler_finish_handshake (struct ws_handler *self)
 static bool
 ws_handler_push (struct ws_handler *self, const void *data, size_t len)
 {
-	if (self->state == WS_HANDLER_WEBSOCKETS)
+	if (self->state != WS_HANDLER_HANDSHAKE)
+	{
+		// TODO: handle the case of len == 0:
+		//   OPEN: "on_close" WS_STATUS_ABNORMAL
+		//   CLOSING: just close the connection
 		return ws_parser_push (&self->parser, data, len);
+	}
 
 	// The handshake hasn't been done yet, process HTTP headers
 	static const http_parser_settings http_settings =
@@ -1637,33 +1947,37 @@ ws_handler_push (struct ws_handler *self, const void *data, size_t len)
 		.on_url              = ws_handler_on_url,
 	};
 
+	// NOTE: the HTTP parser unfolds values and removes preceeding whitespace,
+	//   but otherwise doesn't touch the values or the following whitespace;
+	//   we might want to strip at least the trailing whitespace
 	size_t n_parsed = http_parser_execute (&self->hp,
 		&http_settings, data, len);
 
 	if (self->hp.upgrade)
 	{
+		// The handshake hasn't been finished, yet there is more data
+		//   to be processed after the headers already
 		if (len - n_parsed)
-		{
-			// TODO: error: the handshake hasn't been finished, yet there
-			//   is more data to process after the headers
-		}
+			FAIL_HANDSHAKE (HTTP_400_BAD_REQUEST, NULL);
 
 		if (!ws_handler_finish_handshake (self))
 			return false;
 
-		self->state = WS_HANDLER_WEBSOCKETS;
+		self->state = WS_HANDLER_OPEN;
 		return true;
 	}
 
-	if (n_parsed != len || HTTP_PARSER_ERRNO (&self->hp) != HPE_OK)
+	enum http_errno err = HTTP_PARSER_ERRNO (&self->hp);
+	if (n_parsed != len || err != HPE_OK)
 	{
-		// TODO: error
-		// print_debug (..., http_errno_description
-		//   (HTTP_PARSER_ERRNO (&self->hp));
-		// NOTE: if == HPE_CB_headers_complete, "Upgrade" is missing
-		return false;
-	}
+		if (err == HPE_CB_headers_complete)
+			print_debug ("WS handshake failed: %s", "missing `Upgrade' field");
+		else
+			print_debug ("WS handshake failed: %s",
+				http_errno_description (err));
 
+		FAIL_HANDSHAKE (HTTP_400_BAD_REQUEST, NULL);
+	}
 	return true;
 }
 
@@ -1776,45 +2090,37 @@ json_rpc_response (json_t *id, json_t *result, json_t *error)
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 static bool
-try_advance (const char **p, const char *text)
+validate_json_rpc_content_type (const char *content_type)
 {
-	size_t len = strlen (text);
-	if (strncmp (*p, text, len))
-		return false;
+	char *type = NULL;
+	char *subtype = NULL;
 
-	*p += len;
-	return true;
-}
+	struct str_map parameters;
+	str_map_init (&parameters);
+	parameters.free = free;
+	parameters.key_xfrm = tolower_ascii_strxfrm;
 
-static bool
-validate_json_rpc_content_type (const char *type)
-{
-	const char *content_types[] =
-	{
-		"application/json-rpc",  // obsolete
-		"application/json"
-	};
-	const char *tails[] =
-	{
-		"; charset=utf-8",
-		"; charset=UTF-8",
-		""
-	};
+	bool result = http_parse_media_type
+		(content_type, &type, &subtype, &parameters);
+	if (!result)
+		goto end;
 
-	bool found = false;
-	for (size_t i = 0; i < N_ELEMENTS (content_types); i++)
-		if ((found = try_advance (&type, content_types[i])))
-			break;
-	if (!found)
-		return false;
+	if (strcasecmp_ascii (type, "application")
+	 || (strcasecmp_ascii (subtype, "json") &&
+		 strcasecmp_ascii (subtype, "json-rpc" /* obsolete */)))
+		result = false;
 
-	for (size_t i = 0; i < N_ELEMENTS (tails); i++)
-		if ((found = try_advance (&type, tails[i])))
-			break;
-	if (!found)
-		return false;
+	const char *charset = str_map_find (&parameters, "charset");
+	if (charset && strcasecmp_ascii (charset, "UTF-8"))
+		result = false;
 
-	return !*type;
+	// Currently ignoring all unknown parametrs
+
+end:
+	free (type);
+	free (subtype);
+	str_map_free (&parameters);
+	return result;
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -2588,10 +2894,17 @@ client_ws_on_message (void *user_data,
 	struct client *client = user_data;
 	struct client_ws *self = client->impl_data;
 
+	if (type != WS_OPCODE_TEXT)
+	{
+		ws_handler_fail (&self->handler, WS_STATUS_UNACCEPTABLE);
+		return false;
+	}
+
 	struct str response;
 	str_init (&response);
 	process_json_rpc (client->ctx, data, len, &response);
-	// TODO: send the response
+	ws_handler_send (&self->handler,
+		WS_OPCODE_TEXT, response.str, response.len);
 	str_free (&response);
 	return true;
 }
@@ -2607,6 +2920,9 @@ client_ws_init (struct client *client)
 	self->handler.on_message = client_ws_on_message;
 	self->handler.user_data  = client;
 	// TODO: configure the handler some more, e.g. regarding the protocol
+
+	// One mebibyte seems to be a reasonable value
+	self->handler.max_payload_len = 1 << 10;
 }
 
 static void
