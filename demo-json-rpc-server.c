@@ -136,7 +136,92 @@ strcasecmp_ascii (const char *a, const char *b)
 	return *a - *b;
 }
 
+static bool
+isspace_ascii (int c)
+{
+	return c == '\f' || c == '\n' || c == '\r' || c == '\t' || c == '\v';
+}
+
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+static uint8_t g_base64_table[256] =
+{
+	64, 64, 64, 64, 64, 64, 64, 64,  64, 64, 64, 64, 64, 64, 64, 64,
+	64, 64, 64, 64, 64, 64, 64, 64,  64, 64, 64, 64, 64, 64, 64, 64,
+	64, 64, 64, 64, 64, 64, 64, 64,  64, 64, 64, 62, 64, 64, 64, 63,
+	52, 53, 54, 55, 56, 57, 58, 59,  60, 61, 64, 64, 64,  0, 64, 64,
+	64,  0,  1,  2,  3,  4,  5,  6,   7,  8,  9, 10, 11, 12, 13, 14,
+	15, 16, 17, 18, 19, 20, 21, 22,  23, 24, 25, 64, 64, 64, 64, 64,
+	64, 26, 27, 28, 29, 30, 31, 32,  33, 34, 35, 36, 37, 38, 39, 40,
+	41, 42, 43, 44, 45, 46, 47, 48,  49, 50, 51, 64, 64, 64, 64, 64,
+
+	64, 64, 64, 64, 64, 64, 64, 64,  64, 64, 64, 64, 64, 64, 64, 64,
+	64, 64, 64, 64, 64, 64, 64, 64,  64, 64, 64, 64, 64, 64, 64, 64,
+	64, 64, 64, 64, 64, 64, 64, 64,  64, 64, 64, 64, 64, 64, 64, 64,
+	64, 64, 64, 64, 64, 64, 64, 64,  64, 64, 64, 64, 64, 64, 64, 64,
+	64, 64, 64, 64, 64, 64, 64, 64,  64, 64, 64, 64, 64, 64, 64, 64,
+	64, 64, 64, 64, 64, 64, 64, 64,  64, 64, 64, 64, 64, 64, 64, 64,
+	64, 64, 64, 64, 64, 64, 64, 64,  64, 64, 64, 64, 64, 64, 64, 64,
+	64, 64, 64, 64, 64, 64, 64, 64,  64, 64, 64, 64, 64, 64, 64, 64,
+};
+
+static inline bool
+base64_decode_group (const char **s, struct str *output)
+{
+	uint8_t input[4];
+	size_t loaded = 0;
+	for (; loaded < 4; (*s)++)
+	{
+		if (!**s)
+			return loaded == 0;
+		if (!isspace_ascii (**s))
+			input[loaded++] = **s;
+	}
+
+	size_t len = 3;
+	if (input[0] == '=' || input[1] == '=')
+		return false;
+	if (input[2] == '=' && input[3] != '=')
+		return false;
+	if (input[2] == '=')
+		len--;
+	if (input[3] == '=')
+		len--;
+
+	uint8_t a = g_base64_table[input[0]];
+	uint8_t b = g_base64_table[input[1]];
+	uint8_t c = g_base64_table[input[2]];
+	uint8_t d = g_base64_table[input[3]];
+
+	if (((a | b) | (c | d)) & 0x40)
+		return false;
+
+	uint32_t block = a << 18 | b << 12 | c << 6 | d;
+	switch (len)
+	{
+	case 1:
+		str_append_c (output, block >> 16);
+		break;
+	case 2:
+		str_append_c (output, block >> 16);
+		str_append_c (output, block >> 8);
+		break;
+	case 3:
+		str_append_c (output, block >> 16);
+		str_append_c (output, block >> 8);
+		str_append_c (output, block);
+	}
+	return true;
+}
+
+static bool
+base64_decode (const char *s, struct str *output)
+{
+	while (*s)
+		if (!base64_decode_group (&s, output))
+			return false;
+	return true;
+}
 
 static void
 base64_encode (const void *data, size_t len, struct str *output)
@@ -178,37 +263,73 @@ base64_encode (const void *data, size_t len, struct str *output)
 	}
 }
 
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+// --- HTTP parsing ------------------------------------------------------------
 
-// Basic tokenizer for HTTP headers, to be used in various parsers.
+// Basic tokenizer for HTTP header field values, to be used in various parsers.
 // The input should already be unwrapped.
 
-enum http_tokenizer_field
+// Recommended literature:
+//   http://tools.ietf.org/html/rfc7230#section-3.2.6
+//   http://tools.ietf.org/html/rfc7230#appendix-B
+//   http://tools.ietf.org/html/rfc5234#appendix-B.1
+
+#define HTTP_TOKENIZER_CLASS(name, definition)                                 \
+	static inline bool                                                         \
+	http_tokenizer_is_ ## name (int c)                                         \
+	{                                                                          \
+		return (definition);                                                   \
+	}
+
+HTTP_TOKENIZER_CLASS (vchar, c >= 0x21 && c <= 0x7E)
+HTTP_TOKENIZER_CLASS (delimiter, !!strchr ("\"(),/:;<=>?@[\\]{}", c))
+HTTP_TOKENIZER_CLASS (whitespace, c == '\t' || c == ' ')
+HTTP_TOKENIZER_CLASS (obs_text, c >= 0x80 && c <= 0xFF)
+
+HTTP_TOKENIZER_CLASS (tchar,
+	http_tokenizer_is_vchar (c) && !http_tokenizer_is_delimiter (c))
+
+HTTP_TOKENIZER_CLASS (qdtext,
+	c == '\t' || c == ' ' || c == '!'
+	|| (c >= 0x23 && c <= 0x5B)
+	|| (c >= 0x5D && c <= 0x7E)
+	|| http_tokenizer_is_obs_text (c))
+
+HTTP_TOKENIZER_CLASS (quoted_pair,
+	c == '\t' || c == ' '
+	|| http_tokenizer_is_vchar (c)
+	|| http_tokenizer_is_obs_text (c))
+
+#undef HTTP_TOKENIZER_CLASS
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+enum http_tokenizer_token
 {
 	HTTP_T_EOF,                         ///< Input error
 	HTTP_T_ERROR,                       ///< End of input
 
 	HTTP_T_TOKEN,                       ///< "token"
 	HTTP_T_QUOTED_STRING,               ///< "quoted-string"
-	HTTP_T_SEPARATOR                    ///< "separators"
+	HTTP_T_DELIMITER,                   ///< "delimiters"
+	HTTP_T_WHITESPACE                   ///< RWS/OWS/BWS
 };
 
 struct http_tokenizer
 {
-	const char *input;                  ///< The input string
+	const unsigned char *input;         ///< The input string
 	size_t input_len;                   ///< Length of the input
 	size_t offset;                      ///< Position in the input
 
-	char separator;                     ///< The separator character
+	char delimiter;                     ///< The delimiter character
 	struct str string;                  ///< "token" / "quoted-string" content
 };
 
 static void
-http_tokenizer_init (struct http_tokenizer *self, const char *input)
+http_tokenizer_init (struct http_tokenizer *self, const char *input, size_t len)
 {
 	memset (self, 0, sizeof *self);
-	self->input = input;
-	self->input_len = strlen (input);
+	self->input = (const unsigned char *) input;
+	self->input_len = len;
 
 	str_init (&self->string);
 }
@@ -219,19 +340,7 @@ http_tokenizer_free (struct http_tokenizer *self)
 	str_free (&self->string);
 }
 
-static bool
-http_tokenizer_is_ctl (int c)
-{
-	return (c >= 0 && c <= 31) || c == 127;
-}
-
-static bool
-http_tokenizer_is_char (int c)
-{
-	return c >= 0 && c <= 127;
-}
-
-static enum http_tokenizer_field
+static enum http_tokenizer_token
 http_tokenizer_quoted_string (struct http_tokenizer *self)
 {
 	bool quoted_pair = false;
@@ -240,7 +349,7 @@ http_tokenizer_quoted_string (struct http_tokenizer *self)
 		int c = self->input[self->offset++];
 		if (quoted_pair)
 		{
-			if (!http_tokenizer_is_char (c))
+			if (!http_tokenizer_is_quoted_pair (c))
 				return HTTP_T_ERROR;
 
 			str_append_c (&self->string, c);
@@ -250,29 +359,27 @@ http_tokenizer_quoted_string (struct http_tokenizer *self)
 			quoted_pair = true;
 		else if (c == '"')
 			return HTTP_T_QUOTED_STRING;
-		else if (http_tokenizer_is_ctl (c))
-			return HTTP_T_ERROR;
-		else
+		else if (http_tokenizer_is_qdtext (c))
 			str_append_c (&self->string, c);
+		else
+			return HTTP_T_ERROR;
 	}
 
 	// Premature end of input
 	return HTTP_T_ERROR;
 }
 
-static enum http_tokenizer_field
-http_tokenizer_next (struct http_tokenizer *self, bool skip_lws)
+static enum http_tokenizer_token
+http_tokenizer_next (struct http_tokenizer *self, bool skip_ows)
 {
-	const char *separators = "()<>@.;:\\\"/[]?={} \t";
-
 	str_reset (&self->string);
 	if (self->offset >= self->input_len)
 		return HTTP_T_EOF;
 
 	int c = self->input[self->offset++];
 
-	if (skip_lws)
-		while (c == ' ' || c == '\t')
+	if (skip_ows)
+		while (http_tokenizer_is_whitespace (c))
 		{
 			if (self->offset >= self->input_len)
 				return HTTP_T_EOF;
@@ -282,29 +389,38 @@ http_tokenizer_next (struct http_tokenizer *self, bool skip_lws)
 	if (c == '"')
 		return http_tokenizer_quoted_string (self);
 
-	if (strchr (separators, c))
+	if (http_tokenizer_is_delimiter (c))
 	{
-		self->separator = c;
-		return HTTP_T_SEPARATOR;
+		self->delimiter = c;
+		return HTTP_T_DELIMITER;
 	}
 
-	if (!http_tokenizer_is_char (c)
-	 || http_tokenizer_is_ctl (c))
+	// Simple variable-length tokens
+	enum http_tokenizer_token result;
+	bool (*eater) (int c) = NULL;
+	if (http_tokenizer_is_whitespace (c))
+	{
+		eater = http_tokenizer_is_whitespace;
+		result = HTTP_T_WHITESPACE;
+	}
+	else if (http_tokenizer_is_tchar (c))
+	{
+		eater = http_tokenizer_is_tchar;
+		result = HTTP_T_TOKEN;
+	}
+	else
 		return HTTP_T_ERROR;
 
 	str_append_c (&self->string, c);
 	while (self->offset < self->input_len)
 	{
-		c = self->input[self->offset];
-		if (!http_tokenizer_is_char (c)
-		 || http_tokenizer_is_ctl (c)
-		 || strchr (separators, c))
+		if (!eater (c = self->input[self->offset]))
 			break;
 
 		str_append_c (&self->string, c);
 		self->offset++;
 	}
-	return HTTP_T_TOKEN;
+	return result;
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -320,8 +436,8 @@ http_parse_media_type_parameter
 		goto end;
 	attribute = xstrdup (t->string.str);
 
-	if (http_tokenizer_next (t, false) != HTTP_T_SEPARATOR
-	 || t->separator != '=')
+	if (http_tokenizer_next (t, false) != HTTP_T_DELIMITER
+	 || t->delimiter != '=')
 		goto end;
 
 	switch (http_tokenizer_next (t, false))
@@ -339,24 +455,22 @@ end:
 	return result;
 }
 
-/// Parser for Accept and Content-Type.  @a type and @a subtype may be non-NULL
+/// Parser for "Content-Type".  @a type and @a subtype may be non-NULL
 /// even if the function fails.  @a parameters should be case-insensitive.
 static bool
 http_parse_media_type (const char *media_type,
 	char **type, char **subtype, struct str_map *parameters)
 {
-	// The parsing is strict wrt. LWS as per RFC 2616 section 3.7
-
 	bool result = false;
 	struct http_tokenizer t;
-	http_tokenizer_init (&t, media_type);
+	http_tokenizer_init (&t, media_type, strlen (media_type));
 
 	if (http_tokenizer_next (&t, true) != HTTP_T_TOKEN)
 		goto end;
 	*type = xstrdup (t.string.str);
 
-	if (http_tokenizer_next (&t, false) != HTTP_T_SEPARATOR
-	 || t.separator != '/')
+	if (http_tokenizer_next (&t, false) != HTTP_T_DELIMITER
+	 || t.delimiter != '/')
 		goto end;
 
 	if (http_tokenizer_next (&t, false) != HTTP_T_TOKEN)
@@ -366,8 +480,8 @@ http_parse_media_type (const char *media_type,
 	while (true)
 	switch (http_tokenizer_next (&t, true))
 	{
-	case HTTP_T_SEPARATOR:
-		if (t.separator != ';')
+	case HTTP_T_DELIMITER:
+		if (t.delimiter != ';')
 			goto end;
 		if (!http_parse_media_type_parameter (&t, parameters))
 			goto end;
@@ -379,6 +493,125 @@ http_parse_media_type (const char *media_type,
 	}
 
 end:
+	http_tokenizer_free (&t);
+	return result;
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+struct http_protocol
+{
+	LIST_HEADER (struct http_protocol)
+
+	char *name;                         ///< The protocol to upgrade to
+	char *version;                      ///< Version of the protocol, if any
+};
+
+static void
+http_protocol_destroy (struct http_protocol *self)
+{
+	free (self->name);
+	free (self->version);
+	free (self);
+}
+
+static bool
+http_parse_upgrade (const char *upgrade, struct http_protocol **out)
+{
+	// HTTP grammar makes this more complicated than it should be
+
+	bool result = false;
+	struct http_protocol *list = NULL;
+	struct http_protocol *tail = NULL;
+
+	struct http_tokenizer t;
+	http_tokenizer_init (&t, upgrade, strlen (upgrade));
+
+	enum {
+		STATE_PROTOCOL_NAME,
+		STATE_SLASH,
+		STATE_PROTOCOL_VERSION,
+		STATE_EXPECT_COMMA
+	} state = STATE_PROTOCOL_NAME;
+	struct http_protocol *proto = NULL;
+
+	while (true)
+	switch (state)
+	{
+	case STATE_PROTOCOL_NAME:
+		switch (http_tokenizer_next (&t, false))
+		{
+		case HTTP_T_DELIMITER:
+			if (t.delimiter != ',')
+				goto end;
+		case HTTP_T_WHITESPACE:
+			break;
+		case HTTP_T_TOKEN:
+			proto = xcalloc (1, sizeof *proto);
+			proto->name = xstrdup (t.string.str);
+			LIST_APPEND_WITH_TAIL (list, tail, proto);
+			state = STATE_SLASH;
+			break;
+		case HTTP_T_EOF:
+			result = true;
+		default:
+			goto end;
+		}
+		break;
+	case STATE_SLASH:
+		switch (http_tokenizer_next (&t, false))
+		{
+		case HTTP_T_DELIMITER:
+			if (t.delimiter == '/')
+				state = STATE_PROTOCOL_VERSION;
+			else if (t.delimiter == ',')
+				state = STATE_PROTOCOL_NAME;
+			else
+				goto end;
+			break;
+		case HTTP_T_WHITESPACE:
+			state = STATE_EXPECT_COMMA;
+			break;
+		case HTTP_T_EOF:
+			result = true;
+		default:
+			goto end;
+		}
+		break;
+	case STATE_PROTOCOL_VERSION:
+		switch (http_tokenizer_next (&t, false))
+		{
+		case HTTP_T_TOKEN:
+			proto->version = xstrdup (t.string.str);
+			state = STATE_EXPECT_COMMA;
+			break;
+		default:
+			goto end;
+		}
+		break;
+	case STATE_EXPECT_COMMA:
+		switch (http_tokenizer_next (&t, false))
+		{
+		case HTTP_T_DELIMITER:
+			if (t.delimiter != ',')
+				goto end;
+			state = STATE_PROTOCOL_NAME;
+		case HTTP_T_WHITESPACE:
+			break;
+		case HTTP_T_EOF:
+			result = true;
+		default:
+			goto end;
+		}
+	}
+
+end:
+	if (result)
+		*out = list;
+	else
+		LIST_FOR_EACH (struct http_protocol, iter, list)
+			http_protocol_destroy (iter);
+
 	http_tokenizer_free (&t);
 	return result;
 }
@@ -1765,16 +1998,38 @@ ws_handler_free (struct ws_handler *self)
 	ev_timer_stop (EV_DEFAULT_ &self->ping_timer);
 }
 
+static bool
+ws_handler_header_field_is_a_list (const char *name)
+{
+	// This must contain all header fields we use for anything
+	static const char *concatenable[] =
+		{ SEC_WS_PROTOCOL, SEC_WS_EXTENSIONS, "Connection", "Upgrade" };
+
+	for (size_t i = 0; i < N_ELEMENTS (concatenable); i++)
+		if (!strcasecmp_ascii (name, concatenable[i]))
+			return true;
+	return false;
+}
+
 static void
 ws_handler_on_header_read (struct ws_handler *self)
 {
-	const char *field = self->field.str;
-	bool can_concat =
-		!strcasecmp_ascii (field, SEC_WS_PROTOCOL) ||
-		!strcasecmp_ascii (field, SEC_WS_EXTENSIONS);
+	// The HTTP parser unfolds values and removes preceding whitespace, but
+	// otherwise doesn't touch the values or the following whitespace.
 
+	// RFC 7230 states that trailing whitespace is not part of a field value
+	char *value = self->field.str;
+	size_t len = self->field.len;
+	while (len--)
+		if (value[len] == '\t' || value[len] == ' ')
+			value[len] = '\0';
+		else
+			break;
+	self->field.len = len;
+
+	const char *field = self->field.str;
 	const char *current = str_map_find (&self->headers, field);
-	if (can_concat && current)
+	if (ws_handler_header_field_is_a_list (field) && current)
 		str_map_set (&self->headers, field,
 			xstrdup_printf ("%s, %s", current, self->value.str));
 	else
@@ -1828,6 +2083,7 @@ ws_handler_on_url (http_parser *parser, const char *at, size_t len)
 #define HTTP_101_SWITCHING_PROTOCOLS    "101 Switching Protocols"
 #define HTTP_400_BAD_REQUEST            "400 Bad Request"
 #define HTTP_405_METHOD_NOT_ALLOWED     "405 Method Not Allowed"
+#define HTTP_417_EXPECTATION_FAILED     "407 Expectation Failed"
 #define HTTP_505_VERSION_NOT_SUPPORTED  "505 HTTP Version Not Supported"
 
 static void
@@ -1877,24 +2133,57 @@ ws_handler_http_response (struct ws_handler *self, const char *status, ...)
 static bool
 ws_handler_finish_handshake (struct ws_handler *self)
 {
-	if (self->hp.http_major != 1 || self->hp.http_minor != 1)
+	// XXX: we probably shouldn't use 505 to reject the minor version but w/e
+	if (self->hp.http_major != 1 || self->hp.http_minor < 1)
 		FAIL_HANDSHAKE (HTTP_505_VERSION_NOT_SUPPORTED, NULL);
 	if (self->hp.method != HTTP_GET)
 		FAIL_HANDSHAKE (HTTP_405_METHOD_NOT_ALLOWED, "Allow: GET", NULL);
 
-	// Reject weird URLs specifying the schema and the host
+	// Your expectations are way too high
+	if (str_map_find (&self->headers, "Expect"))
+		FAIL_HANDSHAKE (HTTP_417_EXPECTATION_FAILED, NULL);
+
+	// Reject URLs specifying the schema and host; we're not parsing that
+	// TODO: actually do parse this and let our user decide if it matches
 	struct http_parser_url url;
 	if (http_parser_parse_url (self->url.str, self->url.len, false, &url)
-	 || (url.field_set & (1 << UF_SCHEMA | 1 << UF_HOST | 1 << UF_PORT)))
+	 || (url.field_set & (1 << UF_SCHEMA | 1 << UF_HOST | 1 << UF_PORT))
+	 || !str_map_find (&self->headers, "Host"))
 		FAIL_HANDSHAKE (HTTP_400_BAD_REQUEST, NULL);
 
-	const char *upgrade  = str_map_find (&self->headers, "Upgrade");
-	// TODO: we should ideally check that this is a 16-byte base64-encoded value
+	const char *connection = str_map_find (&self->headers, "Connection");
+	if (!connection || strcasecmp_ascii (connection, "Upgrade"))
+		FAIL_HANDSHAKE (HTTP_400_BAD_REQUEST, NULL);
+
+	// Check if we can actually upgrade the protocol to WebSockets
+	const char *upgrade = str_map_find (&self->headers, "Upgrade");
+	struct http_protocol *offered_upgrades = NULL;
+	bool can_upgrade = false;
+	if (upgrade && http_parse_upgrade (upgrade, &offered_upgrades))
+		// Case-insensitive according to RFC 6455; neither RFC 2616 nor 7230
+		// say anything at all about case-sensitivity for this field
+		LIST_FOR_EACH (struct http_protocol, iter, offered_upgrades)
+		{
+			if (!iter->version && !strcasecmp_ascii (iter->name, "websocket"))
+				can_upgrade = true;
+			http_protocol_destroy (iter);
+		}
+	if (!can_upgrade)
+		FAIL_HANDSHAKE (HTTP_400_BAD_REQUEST, NULL);
+
+	// Okay, we've finally got past basic HTTP/1.1 stuff
 	const char *key      = str_map_find (&self->headers, SEC_WS_KEY);
 	const char *version  = str_map_find (&self->headers, SEC_WS_VERSION);
 	const char *protocol = str_map_find (&self->headers, SEC_WS_PROTOCOL);
 
-	if (!upgrade || strcmp (upgrade, "websocket") || !version)
+	struct str tmp;
+	str_init (&tmp);
+	bool key_is_valid = base64_decode (key, &tmp) && tmp.len == 16;
+	str_free (&tmp);
+	if (!key_is_valid)
+		FAIL_HANDSHAKE (HTTP_400_BAD_REQUEST, NULL);
+
+	if (!version)
 		FAIL_HANDSHAKE (HTTP_400_BAD_REQUEST, NULL);
 	if (strcmp (version, "13"))
 		FAIL_HANDSHAKE (HTTP_400_BAD_REQUEST, SEC_WS_VERSION ": 13", NULL);
@@ -1947,9 +2236,6 @@ ws_handler_push (struct ws_handler *self, const void *data, size_t len)
 		.on_url              = ws_handler_on_url,
 	};
 
-	// NOTE: the HTTP parser unfolds values and removes preceeding whitespace,
-	//   but otherwise doesn't touch the values or the following whitespace;
-	//   we might want to strip at least the trailing whitespace
 	size_t n_parsed = http_parser_execute (&self->hp,
 		&http_settings, data, len);
 
