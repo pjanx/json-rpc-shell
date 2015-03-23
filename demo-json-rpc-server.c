@@ -130,10 +130,12 @@ tolower_ascii_strxfrm (char *dest, const char *src, size_t n)
 static int
 strcasecmp_ascii (const char *a, const char *b)
 {
-	while (*a && *b)
-		if (tolower_ascii (*a) != tolower_ascii (*b))
-			break;
-	return *a - *b;
+	while (*a && tolower_ascii (*a) == tolower_ascii (*b))
+	{
+		a++;
+		b++;
+	}
+	return *(const unsigned char *) a - *(const unsigned char *) b;
 }
 
 static bool
@@ -145,6 +147,7 @@ isspace_ascii (int c)
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 /// Return a pointer to the next UTF-8 character, or NULL on error
+// TODO: decode the sequence while we're at it
 static const char *
 utf8_next (const char *s, size_t len)
 {
@@ -170,18 +173,21 @@ utf8_next (const char *s, size_t len)
 		tail_len++;
 	}
 
+	p++;
+
 	// Check the rest of the sequence
-	if (tail_len < --len)
+	if (tail_len > --len)
 		return NULL;
 
 	while (tail_len--)
-		if ((*++p & 0xC0) != 0x80)
+		if ((*p++ & 0xC0) != 0x80)
 			return NULL;
 
 	return (const char *) p;
 }
 
 /// Very rough UTF-8 validation, just makes sure codepoints can be iterated
+// TODO: also validate the codepoints
 static bool
 utf8_validate (const char *s, size_t len)
 {
@@ -1430,6 +1436,8 @@ struct scgi_parser
 static void
 scgi_parser_init (struct scgi_parser *self)
 {
+	memset (self, 0, sizeof *self);
+
 	str_init (&self->input);
 	str_map_init (&self->headers);
 	self->headers.free = free;
@@ -1705,6 +1713,7 @@ ws_parser_unmask (struct ws_parser *self)
 static bool
 ws_parser_push (struct ws_parser *self, const void *data, size_t len)
 {
+	bool success = false;
 	str_append_data (&self->input, data, len);
 
 	struct msg_unpacker unpacker;
@@ -1717,8 +1726,8 @@ ws_parser_push (struct ws_parser *self, const void *data, size_t len)
 		uint16_t u16;
 
 	case WS_PARSER_FIXED:
-		if (self->input.len < 2)
-			return true;
+		if (unpacker.len - unpacker.offset < 2)
+			goto need_data;
 
 		(void) msg_unpacker_u8 (&unpacker, &u8);
 		self->is_fin      = (u8 >> 7) &   1;
@@ -1737,59 +1746,59 @@ ws_parser_push (struct ws_parser *self, const void *data, size_t len)
 			self->state = WS_PARSER_PAYLOAD_LEN_16;
 		else
 			self->state = WS_PARSER_MASK;
-
-		str_remove_slice (&self->input, 0, 2);
 		break;
 
 	case WS_PARSER_PAYLOAD_LEN_16:
-		if (self->input.len < 2)
-			return true;
-
-		(void) msg_unpacker_u16 (&unpacker, &u16);
+		if (!msg_unpacker_u16 (&unpacker, &u16))
+			goto need_data;
 		self->payload_len = u16;
 
 		self->state = WS_PARSER_MASK;
-		str_remove_slice (&self->input, 0, 2);
 		break;
 
 	case WS_PARSER_PAYLOAD_LEN_64:
-		if (self->input.len < 8)
-			return true;
-
-		(void) msg_unpacker_u64 (&unpacker, &self->payload_len);
+		if (!msg_unpacker_u64 (&unpacker, &self->payload_len))
+			goto need_data;
 
 		self->state = WS_PARSER_MASK;
-		str_remove_slice (&self->input, 0, 8);
 		break;
 
 	case WS_PARSER_MASK:
 		if (!self->is_masked)
 			goto end_of_header;
-		if (self->input.len < 4)
-			return true;
-
-		(void) msg_unpacker_u32 (&unpacker, &self->mask);
-		str_remove_slice (&self->input, 0, 4);
+		if (!msg_unpacker_u32 (&unpacker, &self->mask))
+			goto need_data;
 
 	end_of_header:
 		self->state = WS_PARSER_PAYLOAD;
 		if (!self->on_frame_header (self->user_data, self))
-			return false;
+			goto fail;
 		break;
 
 	case WS_PARSER_PAYLOAD:
-		if (self->input.len < self->payload_len)
-			return true;
+		// Move the buffer so that payload data is at the front
+		str_remove_slice (&self->input, 0, unpacker.offset);
 
+		// And continue unpacking frames past the payload
+		msg_unpacker_init (&unpacker, self->input.str, self->input.len);
+		unpacker.offset = self->payload_len;
+
+		if (self->input.len < self->payload_len)
+			goto need_data;
 		if (self->is_masked)
 			ws_parser_unmask (self);
 		if (!self->on_frame (self->user_data, self))
-			return false;
+			goto fail;
 
 		self->state = WS_PARSER_FIXED;
-		str_reset (&self->input);
 		break;
 	}
+
+need_data:
+	success = true;
+fail:
+	str_remove_slice (&self->input, 0, unpacker.offset);
+	return success;
 }
 
 // - - Server handler  - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -2792,6 +2801,7 @@ struct request_handler g_request_handler_json_rpc =
 static char *
 canonicalize_url_path (const char *path)
 {
+	// XXX: this strips any slashes at the end
 	struct str_vector v;
 	str_vector_init (&v);
 	split_str_ignore_empty (path, '/', &v);
@@ -2810,7 +2820,7 @@ canonicalize_url_path (const char *path)
 
 		if (strcmp (dir, ".."))
 			str_vector_add (&canonical, dir);
-		else if (canonical.len)
+		else if (canonical.len > 1)
 			// ".." never goes above the root
 			str_vector_remove (&canonical, canonical.len - 1);
 	}
@@ -3631,6 +3641,186 @@ lock_pid_file (struct server_context *ctx, struct error **e)
 	return true;
 }
 
+// --- Tests -------------------------------------------------------------------
+
+static void
+test_utf8 (void)
+{
+	const char valid  [] = "2H₂ + O₂ ⇌ 2H₂O, R = 4.7 kΩ, ⌀ 200 mm";
+	const char invalid[] = "\xf0\x90\x28\xbc";
+	soft_assert ( utf8_validate (valid,   sizeof valid));
+	soft_assert (!utf8_validate (invalid, sizeof invalid));
+}
+
+static void
+test_base64 (void)
+{
+	char data[65];
+	for (size_t i = 0; i < N_ELEMENTS (data); i++)
+		data[i] = i;
+
+	struct str encoded;  str_init (&encoded);
+	struct str decoded;  str_init (&decoded);
+
+	base64_encode (data, sizeof data, &encoded);
+	soft_assert (base64_decode (encoded.str, false, &decoded));
+	soft_assert (decoded.len == sizeof data);
+	soft_assert (!memcmp (decoded.str, data, sizeof data));
+
+	str_free (&encoded);
+	str_free (&decoded);
+}
+
+static void
+test_http_parser (void)
+{
+	struct str_map parameters;
+	str_map_init (&parameters);
+	parameters.key_xfrm = tolower_ascii_strxfrm;
+
+	char *type = NULL;
+	char *subtype = NULL;
+	soft_assert (http_parse_media_type ("TEXT/html; CHARset=\"utf\\-8\"",
+		&type, &subtype, &parameters));
+	soft_assert (!strcasecmp_ascii (type, "text"));
+	soft_assert (!strcasecmp_ascii (subtype, "html"));
+	soft_assert (parameters.len == 1);
+	soft_assert (!strcmp (str_map_find (&parameters, "charset"), "utf-8"));
+	str_map_free (&parameters);
+
+	struct http_protocol *protocols;
+	soft_assert (http_parse_upgrade ("websocket, HTTP/2.0, , ", &protocols));
+
+	soft_assert (!strcmp (protocols->name, "websocket"));
+	soft_assert (!protocols->version);
+
+	soft_assert (!strcmp (protocols->next->name, "HTTP"));
+	soft_assert (!strcmp (protocols->next->version, "2.0"));
+
+	soft_assert (!protocols->next->next);
+
+	LIST_FOR_EACH (struct http_protocol, iter, protocols)
+		http_protocol_destroy (iter);
+}
+
+static bool
+test_scgi_parser_on_headers_read (void *user_data)
+{
+	struct scgi_parser *parser = user_data;
+	soft_assert (parser->headers.len == 4);
+	soft_assert (!strcmp (str_map_find (&parser->headers,
+		"CONTENT_LENGTH"), "27"));
+	soft_assert (!strcmp (str_map_find (&parser->headers,
+		"SCGI"), "1"));
+	soft_assert (!strcmp (str_map_find (&parser->headers,
+		"REQUEST_METHOD"), "POST"));
+	soft_assert (!strcmp (str_map_find (&parser->headers,
+		"REQUEST_URI"), "/deepthought"));
+	return true;
+}
+
+static bool
+test_scgi_parser_on_content (void *user_data, const void *data, size_t len)
+{
+	(void) user_data;
+	soft_assert (!strncmp (data, "What is the answer to life?", len));
+	return true;
+}
+
+static void
+test_scgi_parser (void)
+{
+	struct scgi_parser parser;
+	scgi_parser_init (&parser);
+	parser.on_headers_read = test_scgi_parser_on_headers_read;
+	parser.on_content      = test_scgi_parser_on_content;
+	parser.user_data       = &parser;
+
+	// This is an example straight from the specification
+	const char example[] =
+		"70:"
+			"CONTENT_LENGTH" "\0" "27" "\0"
+			"SCGI" "\0" "1" "\0"
+			"REQUEST_METHOD" "\0" "POST" "\0"
+			"REQUEST_URI" "\0" "/deepthought" "\0"
+		","
+		"What is the answer to life?";
+
+	soft_assert (scgi_parser_push (&parser, example, sizeof example, NULL));
+	scgi_parser_free (&parser);
+}
+
+static bool
+test_websockets_on_frame_header (void *user_data, const struct ws_parser *self)
+{
+	(void) user_data;
+	soft_assert (self->is_fin);
+	soft_assert (self->is_masked);
+	soft_assert (self->opcode == WS_OPCODE_TEXT);
+	return true;
+}
+
+static bool
+test_websockets_on_frame (void *user_data, const struct ws_parser *self)
+{
+	(void) user_data;
+	soft_assert (self->input.len == self->payload_len);
+	soft_assert (!strncmp (self->input.str, "Hello", self->input.len));
+	return true;
+}
+
+static void
+test_websockets (void)
+{
+	char *accept = ws_encode_response_key ("dGhlIHNhbXBsZSBub25jZQ==");
+	soft_assert (!strcmp (accept, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="));
+	free (accept);
+
+	struct ws_parser parser;
+	ws_parser_init (&parser);
+	parser.on_frame_header = test_websockets_on_frame_header;
+	parser.on_frame        = test_websockets_on_frame;
+	parser.user_data       = &parser;
+
+	const char frame[] = "\x81\x85\x37\xfa\x21\x3d\x7f\x9f\x4d\x51\x58";
+	soft_assert (ws_parser_push (&parser, frame, sizeof frame - 1));
+	ws_parser_free (&parser);
+
+	// TODO: test the server handler (happy path)
+}
+
+static void
+test_misc (void)
+{
+	soft_assert ( validate_json_rpc_content_type
+		("application/JSON; charset=\"utf-8\""));
+	soft_assert (!validate_json_rpc_content_type
+		("text/html; charset=\"utf-8\""));
+
+	char *canon = canonicalize_url_path ("///../../../etc/./passwd");
+	soft_assert (!strcmp (canon, "/etc/passwd"));
+	free (canon);
+}
+
+int
+test_main (int argc, char *argv[])
+{
+	struct test test;
+	test_init (&test, argc, argv);
+
+	test_add_simple (&test, "/utf-8",       NULL, test_utf8);
+	test_add_simple (&test, "/base64",      NULL, test_base64);
+	test_add_simple (&test, "/http-parser", NULL, test_http_parser);
+	test_add_simple (&test, "/scgi-parser", NULL, test_scgi_parser);
+	test_add_simple (&test, "/websockets",  NULL, test_websockets);
+
+	test_add_simple (&test, "/misc",        NULL, test_misc);
+
+	// TODO: write more tests
+
+	return test_run (&test);
+}
+
 // --- Main program ------------------------------------------------------------
 
 static void
@@ -3685,6 +3875,7 @@ parse_program_arguments (int argc, char **argv)
 {
 	static const struct opt opts[] =
 	{
+		{ 't', "test", NULL, 0, "self-test" },
 		{ 'd', "debug", NULL, 0, "run in debug mode" },
 		{ 'h', "help", NULL, 0, "display this help and exit" },
 		{ 'V', "version", NULL, 0, "output version information and exit" },
@@ -3701,6 +3892,9 @@ parse_program_arguments (int argc, char **argv)
 	while ((c = opt_handler_get (&oh)) != -1)
 	switch (c)
 	{
+	case 't':
+		test_main (argc, argv);
+		exit (EXIT_SUCCESS);
 	case 'd':
 		g_debug_mode = true;
 		break;
