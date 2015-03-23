@@ -144,6 +144,61 @@ isspace_ascii (int c)
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
+/// Return a pointer to the next UTF-8 character, or NULL on error
+static const char *
+utf8_next (const char *s, size_t len)
+{
+	// End of string, we go no further
+	if (!len)
+		return NULL;
+
+	// In the middle of a character -> error
+	const uint8_t *p = (const unsigned char *) s;
+	if ((*p & 0xC0) == 0x80)
+		return NULL;
+
+	// Find out how long the sequence is
+	unsigned mask = 0xC0;
+	unsigned tail_len = 0;
+	while ((*p & mask) == mask)
+	{
+		// Invalid start of sequence
+		if (mask == 0xFE)
+			return NULL;
+
+		mask |= mask >> 1;
+		tail_len++;
+	}
+
+	// Check the rest of the sequence
+	if (tail_len < --len)
+		return NULL;
+
+	while (tail_len--)
+		if ((*++p & 0xC0) != 0x80)
+			return NULL;
+
+	return (const char *) p;
+}
+
+/// Very rough UTF-8 validation, just makes sure codepoints can be iterated
+static bool
+utf8_validate (const char *s, size_t len)
+{
+	const char *next;
+	while (len)
+	{
+		if (!(next = utf8_next (s, len)))
+			return false;
+
+		len -= next - s;
+		s = next;
+	}
+	return true;
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
 static uint8_t g_base64_table[256] =
 {
 	64, 64, 64, 64, 64, 64, 64, 64,  64, 64, 64, 64, 64, 64, 64, 64,
@@ -1536,23 +1591,22 @@ ws_encode_response_key (const char *key)
 
 enum ws_status
 {
-	// These names aren't really standard, just somewhat descriptive.
-	// The RFC isn't really much cleaner about their meaning.
+	// Named according to the meaning specified in RFC 6455, section 11.2
 
-	WS_STATUS_NORMAL       = 1000,
-	WS_STATUS_GOING_AWAY   = 1001,
-	WS_STATUS_PROTOCOL     = 1002,
-	WS_STATUS_UNACCEPTABLE = 1003,
-	WS_STATUS_INCONSISTENT = 1007,
-	WS_STATUS_POLICY       = 1008,
-	WS_STATUS_TOO_BIG      = 1009,
-	WS_STATUS_EXTENSION    = 1010,
-	WS_STATUS_UNEXPECTED   = 1011,
+	WS_STATUS_NORMAL_CLOSURE         = 1000,
+	WS_STATUS_GOING_AWAY             = 1001,
+	WS_STATUS_PROTOCOL_ERROR         = 1002,
+	WS_STATUS_UNSUPPORTED_DATA       = 1003,
+	WS_STATUS_INVALID_PAYLOAD_DATA   = 1007,
+	WS_STATUS_POLICY_VIOLATION       = 1008,
+	WS_STATUS_MESSAGE_TOO_BIG        = 1009,
+	WS_STATUS_MANDATORY_EXTENSION    = 1010,
+	WS_STATUS_INTERNAL_SERVER_ERROR  = 1011,
 
 	// Reserved for internal usage
-	WS_STATUS_MISSING      = 1005,
-	WS_STATUS_ABNORMAL     = 1006,
-	WS_STATUS_TLS          = 1015
+	WS_STATUS_NO_STATUS_RECEIVED     = 1005,
+	WS_STATUS_ABNORMAL_CLOSURE       = 1006,
+	WS_STATUS_TLS_HANDSHAKE          = 1015
 };
 
 // - - Frame parser  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -1624,7 +1678,7 @@ ws_parser_free (struct ws_parser *self)
 static void
 ws_parser_unmask (struct ws_parser *self)
 {
-	// Yes, this could be made faster.  For example by reading the mask in
+	// This could be made faster.  For example by reading the mask in
 	// native byte ordering and applying it directly here.
 
 	uint64_t end = self->payload_len & ~(uint64_t) 3;
@@ -1747,9 +1801,10 @@ ws_parser_push (struct ws_parser *self, const void *data, size_t len)
 
 enum ws_handler_state
 {
-	WS_HANDLER_HANDSHAKE,               ///< Parsing HTTP
+	WS_HANDLER_CONNECTING,              ///< Parsing HTTP
 	WS_HANDLER_OPEN,                    ///< Parsing WebSockets frames
-	WS_HANDLER_CLOSING                  ///< Closing the connection
+	WS_HANDLER_CLOSING,                 ///< Closing the connection
+	WS_HANDLER_CLOSED                   ///< Dead
 };
 
 struct ws_handler
@@ -1780,27 +1835,27 @@ struct ws_handler
 	ev_timer ping_timer;                ///< Ping timer
 	bool received_pong;                 ///< Received PONG since the last PING
 
+	// TODO: void (*on_handshake) (protocols) that will allow the user
+	//   to choose any sub-protocol, if the client has provided any.
+
+	// TODO: "on_connected" after the handshake has finished?
+
 	/// Called upon reception of a single full message
 	bool (*on_message) (void *user_data,
 		enum ws_opcode type, const void *data, size_t len);
 
-	// TODO: void (*on_initialized) () that will allow the user to choose
-	//   any sub-protocol, if the client has provided any.
-
-	/// The connection has been closed.
-	/// @a close_code may, or may not, be one of enum ws_status.
-	// NOTE: the "close_code" is what we receive from the remote endpoint,
-	//   or one of 1005/1006/1015
-	// NOTE: the reason is an empty string if omitted
+	/// The connection has been closed.  @a close_code may, or may not, be one
+	/// of enum ws_status.  The @a reason is never NULL.
 	// TODO; also note that ideally, the handler should (be able to) first
 	//   receive a notification about the connection being closed because of
 	//   an error (recv()) returns -1, and call on_close() in reaction.
+	//   Actually, calling push() could work pretty fine for this.
 	void (*on_close) (void *user_data, int close_code, const char *reason);
 
 	/// Write a chunk of data to the stream
 	void (*write_cb) (void *user_data, const void *data, size_t len);
 
-	// TODO: close_cb
+	// TODO: "close_cb"; to be used from a ping timer e.g.
 
 	void *user_data;                    ///< User data for callbacks
 };
@@ -1831,6 +1886,9 @@ ws_handler_fail (struct ws_handler *self, enum ws_status reason)
 	//   some flag for the case that we're in the middle of ws_handler_push(),
 	//   and/or add a mechanism to stop the caller from polling the socket for
 	//   reads).
+	// TODO: set the state to FAILED (not CLOSED as that means the TCP
+	//   connection is closed) and wait until all is sent?
+	// TODO: make sure we don't send pings after the close
 }
 
 // TODO: ws_handler_close() that behaves like ws_handler_fail() but doesn't
@@ -1842,6 +1900,8 @@ static void
 ws_handler_send (struct ws_handler *self,
 	enum ws_opcode opcode, const void *data, size_t len)
 {
+	// TODO: make sure (just assert?) we're in the OPEN state
+
 	struct str header;
 	str_init (&header);
 	str_pack_u8 (&header, 0x80 | (opcode & 0x0F));
@@ -1869,15 +1929,19 @@ ws_handler_on_frame_header (void *user_data, const struct ws_parser *parser)
 {
 	struct ws_handler *self = user_data;
 
+	// Note that we aren't expected to send any close frame before closing the
+	// connection when the frame is unmasked
+
 	if (parser->reserved_1 || parser->reserved_2 || parser->reserved_3
 	 || !parser->is_masked  // client -> server payload must be masked
 	 || (ws_is_control_frame (parser->opcode) &&
 		(!parser->is_fin || parser->payload_len > WS_MAX_CONTROL_PAYLOAD_LEN))
 	 || (!ws_is_control_frame (parser->opcode) &&
-		(self->expecting_continuation && parser->opcode != WS_OPCODE_CONT)))
-		ws_handler_fail (self, WS_STATUS_PROTOCOL);
+		(self->expecting_continuation && parser->opcode != WS_OPCODE_CONT))
+	 || parser->payload_len >= 0x8000000000000000ULL)
+		ws_handler_fail (self, WS_STATUS_PROTOCOL_ERROR);
 	else if (parser->payload_len > self->max_payload_len)
-		ws_handler_fail (self, WS_STATUS_TOO_BIG);
+		ws_handler_fail (self, WS_STATUS_MESSAGE_TOO_BIG);
 	else
 		return true;
 	return false;
@@ -1891,6 +1955,9 @@ ws_handler_on_control_frame
 	{
 	case WS_OPCODE_CLOSE:
 		// TODO: confirm the close
+		// TODO: change the state to CLOSING
+		// TODO: call "on_close"
+		// NOTE: the reason is an empty string if omitted
 		break;
 	case WS_OPCODE_PING:
 		ws_handler_send_control (self, WS_OPCODE_PONG,
@@ -1901,9 +1968,9 @@ ws_handler_on_control_frame
 		self->received_pong = true;
 		break;
 	default:
-		// TODO: shouldn't we rather fail on unknown control frames?
-		//   But should we actually return false at any time?  Yes?
-		break;
+		// Unknown control frame
+		ws_handler_fail (self, WS_STATUS_PROTOCOL_ERROR);
+		return false;
 	}
 	return true;
 }
@@ -1918,8 +1985,8 @@ ws_handler_on_frame (void *user_data, const struct ws_parser *parser)
 	// TODO: do this rather in "on_frame_header"
 	if (self->message_data.len + parser->payload_len > self->max_payload_len)
 	{
-		ws_handler_fail (self, WS_STATUS_TOO_BIG);
-		return true;
+		ws_handler_fail (self, WS_STATUS_MESSAGE_TOO_BIG);
+		return false;
 	}
 
 	if (!self->expecting_continuation)
@@ -1931,6 +1998,13 @@ ws_handler_on_frame (void *user_data, const struct ws_parser *parser)
 
 	if (!parser->is_fin)
 		return true;
+
+	if (self->message_opcode == WS_OPCODE_TEXT
+	 && !utf8_validate (self->parser.input.str, self->parser.input.len))
+	{
+		ws_handler_fail (self, WS_STATUS_INVALID_PAYLOAD_DATA);
+		return false;
+	}
 
 	bool result = self->on_message (self->user_data, self->message_opcode,
 		self->parser.input.str, self->parser.payload_len);
@@ -1976,7 +2050,8 @@ ws_handler_init (struct ws_handler *self)
 	str_init (&self->message_data);
 
 	self->ping_interval = 60;
-	// This is still ridiculously high
+	// This is still ridiculously high.  Note that the most significant bit
+	// must always be zero, i.e. the protocol maximum is 0x7FFF FFFF FFFF FFFF.
 	self->max_payload_len = UINT32_MAX;
 
 	// Just so we can safely stop it
@@ -2124,6 +2199,8 @@ ws_handler_http_response (struct ws_handler *self, const char *status, ...)
 	str_vector_free (&v);
 }
 
+// TODO: also set the connection to some FAILED state or anything that's neither
+//   CONNECTING nor OPEN
 #define FAIL_HANDSHAKE(status, ...)                                            \
 	BLOCK_START                                                                \
 		ws_handler_http_response (self, (status), __VA_ARGS__);                \
@@ -2219,13 +2296,21 @@ ws_handler_finish_handshake (struct ws_handler *self)
 static bool
 ws_handler_push (struct ws_handler *self, const void *data, size_t len)
 {
-	if (self->state != WS_HANDLER_HANDSHAKE)
+	if (!len)
 	{
-		// TODO: handle the case of len == 0:
-		//   OPEN: "on_close" WS_STATUS_ABNORMAL
-		//   CLOSING: just close the connection
-		return ws_parser_push (&self->parser, data, len);
+		if (self->state == WS_HANDLER_OPEN)
+			self->on_close (self->user_data, WS_STATUS_ABNORMAL_CLOSURE, "");
+		else
+		{
+			// TODO: anything to do besides just closing the connection?
+		}
+
+		self->state = WS_HANDLER_CLOSED;
+		return false;
 	}
+
+	if (self->state != WS_HANDLER_CONNECTING)
+		return ws_parser_push (&self->parser, data, len);
 
 	// The handshake hasn't been done yet, process HTTP headers
 	static const http_parser_settings http_settings =
@@ -3182,7 +3267,7 @@ client_ws_on_message (void *user_data,
 
 	if (type != WS_OPCODE_TEXT)
 	{
-		ws_handler_fail (&self->handler, WS_STATUS_UNACCEPTABLE);
+		ws_handler_fail (&self->handler, WS_STATUS_UNSUPPORTED_DATA);
 		return false;
 	}
 
