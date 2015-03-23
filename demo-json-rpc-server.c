@@ -221,7 +221,7 @@ static uint8_t g_base64_table[256] =
 };
 
 static inline bool
-base64_decode_group (const char **s, struct str *output)
+base64_decode_group (const char **s, bool ignore_ws, struct str *output)
 {
 	uint8_t input[4];
 	size_t loaded = 0;
@@ -229,7 +229,7 @@ base64_decode_group (const char **s, struct str *output)
 	{
 		if (!**s)
 			return loaded == 0;
-		if (!isspace_ascii (**s))
+		if (!ignore_ws || !isspace_ascii (**s))
 			input[loaded++] = **s;
 	}
 
@@ -270,10 +270,10 @@ base64_decode_group (const char **s, struct str *output)
 }
 
 static bool
-base64_decode (const char *s, struct str *output)
+base64_decode (const char *s, bool ignore_ws, struct str *output)
 {
 	while (*s)
-		if (!base64_decode_group (&s, output))
+		if (!base64_decode_group (&s, ignore_ws, output))
 			return false;
 	return true;
 }
@@ -2255,7 +2255,7 @@ ws_handler_finish_handshake (struct ws_handler *self)
 
 	struct str tmp;
 	str_init (&tmp);
-	bool key_is_valid = base64_decode (key, &tmp) && tmp.len == 16;
+	bool key_is_valid = base64_decode (key, false, &tmp) && tmp.len == 16;
 	str_free (&tmp);
 	if (!key_is_valid)
 		FAIL_HANDSHAKE (HTTP_400_BAD_REQUEST, NULL);
