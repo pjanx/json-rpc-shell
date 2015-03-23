@@ -1,12 +1,17 @@
 json-rpc-shell
 ==============
 
-`json-rpc-shell' is a trivial shell for running JSON-RPC 2.0 HTTP queries.
+`json-rpc-shell' is a simple shell for running JSON-RPC 2.0 queries.
 
 This software has been created as a replacement for the following shell, which
 is written in Java: http://software.dzhuvinov.com/json-rpc-2.0-shell.html
 
 Fuck Java.  With a sharp, pointy object.  In the ass.  Hard.  json-c as well.
+
+Supported transports
+--------------------
+ - HTTP
+ - HTTPS
 
 Building and Running
 --------------------

@@ -1,5 +1,5 @@
 /*
- * json-rpc-shell.c: trivial JSON-RPC 2.0 shell
+ * json-rpc-shell.c: simple JSON-RPC 2.0 shell
  *
  * Copyright (c) 2014 - 2015, Přemysl Janouch <p.janouch@gmail.com>
  * All rights reserved.

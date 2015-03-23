@@ -77,7 +77,7 @@ foreach (page ${project_MAN_PAGES})
 endforeach (page)
 
 # CPack
-set (CPACK_PACKAGE_DESCRIPTION_SUMMARY "Shell for JSON-RPC 2.0 HTTP queries")
+set (CPACK_PACKAGE_DESCRIPTION_SUMMARY "Shell for running JSON-RPC 2.0 queries")
 set (CPACK_PACKAGE_VENDOR "Premysl Janouch")
 set (CPACK_PACKAGE_CONTACT "Přemysl Janouch <p.janouch@gmail.com>")
 set (CPACK_RESOURCE_FILE_LICENSE "${PROJECT_SOURCE_DIR}/LICENSE")
