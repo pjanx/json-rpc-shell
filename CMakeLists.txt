@@ -23,11 +23,14 @@ set (CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 find_package (Curses)
 find_package (PkgConfig REQUIRED)
 pkg_check_modules (dependencies REQUIRED libcurl jansson)
+pkg_check_modules (libssl REQUIRED libssl libcrypto)
 find_package (LibEV REQUIRED)
 pkg_check_modules (ncursesw ncursesw)
 
-set (project_libraries ${dependencies_LIBRARIES} ${LIBEV_LIBRARIES} readline)
-include_directories (${dependencies_INCLUDE_DIRS} ${LIBEV_INCLUDE_DIRS})
+set (project_libraries ${dependencies_LIBRARIES}
+	${libssl_LIBRARIES} ${LIBEV_LIBRARIES} readline)
+include_directories (${dependencies_INCLUDE_DIRS}
+	${libssl_INCLUDE_DIRS} ${LIBEV_INCLUDE_DIRS})
 
 if (ncursesw_FOUND)
 	list (APPEND project_libraries ${ncursesw_LIBRARIES})
@@ -44,7 +47,7 @@ configure_file (${PROJECT_SOURCE_DIR}/config.h.in ${PROJECT_BINARY_DIR}/config.h
 include_directories (${PROJECT_BINARY_DIR})
 
 # Build the main executable and link it
-add_executable (${PROJECT_NAME} ${PROJECT_NAME}.c)
+add_executable (${PROJECT_NAME} ${PROJECT_NAME}.c http-parser/http_parser.c)
 target_link_libraries (${PROJECT_NAME} ${project_libraries})
 
 # The files to be installed
