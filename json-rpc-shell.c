@@ -900,7 +900,8 @@ backend_ws_establish_connection (struct app_context *ctx,
 }
 
 static bool
-backend_ws_initialize_tls (struct app_context *ctx, struct error **e)
+backend_ws_initialize_tls (struct app_context *ctx,
+	const char *server_name, struct error **e)
 {
 	struct ws_context *self = &ctx->ws;
 	const char *error_info = NULL;
@@ -922,6 +923,12 @@ backend_ws_initialize_tls (struct app_context *ctx, struct error **e)
 		goto error_ssl_3;
 	// Avoid SSL_write() returning SSL_ERROR_WANT_READ
 	SSL_set_mode (self->ssl, SSL_MODE_AUTO_RETRY);
+
+	// Literal IP addresses aren't allowed in the SNI
+	struct in6_addr dummy;
+	if (!inet_pton (AF_INET, server_name, &dummy)
+	 && !inet_pton (AF_INET6, server_name, &dummy))
+		SSL_set_tlsext_host_name (self->ssl, server_name);
 
 	switch (xssl_get_error (self->ssl, SSL_connect (self->ssl), &error_info))
 	{
@@ -1157,7 +1164,7 @@ backend_ws_connect (struct app_context *ctx, struct error **e)
 	if (!backend_ws_establish_connection (ctx, url_host, url_port, e))
 		goto fail_1;
 
-	if (use_tls && !backend_ws_initialize_tls (ctx, e))
+	if (use_tls && !backend_ws_initialize_tls (ctx, url_host, e))
 		goto fail_2;
 
 	unsigned char key[16];
