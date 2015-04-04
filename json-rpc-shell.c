@@ -87,6 +87,13 @@ struct backend_iface
 	void (*destroy) (struct app_context *ctx);
 };
 
+/// Shorthand to set an error and return failure from the function
+#define FAIL(...)                                                              \
+	BLOCK_START                                                                \
+		error_set (e, __VA_ARGS__);                                            \
+		return false;                                                          \
+	BLOCK_END
+
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 enum ws_handler_state
@@ -165,17 +172,8 @@ enum color_mode
 	COLOR_NEVER                         ///< Never use coloured output
 };
 
-enum backend
-{
-	BACKEND_CURL,                       ///< Communication is handled by cURL
-	BACKEND_WS                          ///< WebSockets
-};
-
 static struct app_context
 {
-#if 0
-	enum backend backend;               ///< Our current backend
-#endif
 	struct backend_iface *backend;      ///< Our current backend
 
 	struct ws_context ws;               ///< WebSockets backend data
@@ -437,23 +435,16 @@ read_string_escape_sequence (const char **cursor,
 	case 'x':
 	case 'X':
 		if (!read_hexa_escape (cursor, output))
-		{
-			error_set (e, "invalid hexadecimal escape");
-			return false;
-		}
+			FAIL ("invalid hexadecimal escape");
 		break;
 
 	case '\0':
-		error_set (e, "premature end of escape sequence");
-		return false;
+		FAIL ("premature end of escape sequence");
 
 	default:
 		(*cursor)--;
 		if (!read_octal_escape (cursor, output))
-		{
-			error_set (e, "unknown escape sequence");
-			return false;
-		}
+			FAIL ("unknown escape sequence");
 	}
 	return true;
 }
@@ -677,39 +668,39 @@ backend_ws_on_headers_complete (http_parser *parser)
 }
 
 static bool
-backend_ws_finish_handshake (struct app_context *ctx)
+backend_ws_finish_handshake (struct app_context *ctx, struct error **e)
 {
-	// TODO: return the errors as a "struct error"
 	struct ws_context *self = &ctx->ws;
 	if (self->hp.http_major != 1 || self->hp.http_minor < 1)
-		return false;
+		FAIL ("incompatible HTTP version: %d.%d",
+			self->hp.http_major, self->hp.http_minor);
 
 	if (self->hp.status_code != 101)
 		// TODO: handle other codes?
-		return false;
+		FAIL ("unexpected status code: %d", self->hp.status_code);
 
 	const char *upgrade = str_map_find (&self->headers, "Upgrade");
 	if (!upgrade || strcasecmp_ascii (upgrade, "websocket"))
-		return false;
+		FAIL ("cannot upgrade connection to WebSocket");
 
 	const char *connection = str_map_find (&self->headers, "Connection");
 	if (!connection || strcasecmp_ascii (connection, "Upgrade"))
 		// XXX: maybe we shouldn't be so strict and only check for presence
 		//   of the "Upgrade" token in this list
-		return false;
+		FAIL ("cannot upgrade connection to WebSocket");
 
-	const char *accept = str_map_find (&self->headers, "Accept");
+	const char *accept = str_map_find (&self->headers, SEC_WS_ACCEPT);
 	char *accept_expected = ws_encode_response_key (self->key);
 	bool accept_ok = accept && !strcmp (accept, accept_expected);
 	free (accept_expected);
 	if (!accept_ok)
-		return false;
+		FAIL ("missing or invalid " SEC_WS_ACCEPT " header");
 
 	const char *extensions = str_map_find (&self->headers, SEC_WS_EXTENSIONS);
 	const char *protocol = str_map_find (&self->headers, SEC_WS_PROTOCOL);
 	if (extensions || protocol)
 		// TODO: actually parse these fields
-		return false;
+		FAIL ("unexpected WebSocket extension or protocol");
 
 	return true;
 }
@@ -734,8 +725,14 @@ backend_ws_on_data (struct app_context *ctx, const void *data, size_t len)
 
 	if (self->hp.upgrade)
 	{
-		if (!backend_ws_finish_handshake (ctx))
+		struct error *e = NULL;
+		if (!backend_ws_finish_handshake (ctx, &e))
+		{
+			print_debug ("WS handshake failed: %s", e->message);
+			error_free (e);
 			return false;
+		}
+
 		self->state = WS_HANDLER_OPEN;
 
 		// TODO: set the event loop to quit?
@@ -846,11 +843,8 @@ backend_ws_establish_connection (struct app_context *ctx,
 
 	int err = getaddrinfo (host, port, &gai_hints, &gai_result);
 	if (err)
-	{
-		error_set (e, "%s: %s: %s",
+		FAIL ("%s: %s: %s",
 			"connection failed", "getaddrinfo", gai_strerror (err));
-		return false;
-	}
 
 	int sockfd;
 	for (gai_iter = gai_result; gai_iter; gai_iter = gai_iter->ai_next)
@@ -890,10 +884,7 @@ backend_ws_establish_connection (struct app_context *ctx,
 	freeaddrinfo (gai_result);
 
 	if (!gai_iter)
-	{
-		error_set (e, "connection failed");
-		return false;
-	}
+		FAIL ("connection failed");
 
 	ctx->ws.server_fd = sockfd;
 	return true;
@@ -951,8 +942,8 @@ error_ssl_1:
 	//   multiple errors on the OpenSSL stack.
 	if (!error_info)
 		error_info = ERR_error_string (ERR_get_error (), NULL);
-	error_set (e, "%s: %s", "could not initialize SSL", error_info);
-	return false;
+
+	FAIL ("%s: %s", "could not initialize SSL", error_info);
 }
 
 static bool
@@ -1359,12 +1350,6 @@ backend_curl_add_header (struct app_context *ctx, const char *header)
 		exit_fatal ("cURL setup failed");
 }
 
-#define RPC_FAIL(...)                                                          \
-	BLOCK_START                                                                \
-		error_set (e, __VA_ARGS__);                                            \
-		return false;                                                          \
-	BLOCK_END
-
 static bool
 backend_curl_make_call (struct app_context *ctx,
 	const char *request, bool expect_content, struct str *buf, struct error **e)
@@ -1375,20 +1360,20 @@ backend_curl_make_call (struct app_context *ctx,
 		(curl_off_t) -1)
 	 || curl_easy_setopt (curl, CURLOPT_WRITEDATA, buf)
 	 || curl_easy_setopt (curl, CURLOPT_WRITEFUNCTION, write_callback))
-		RPC_FAIL ("cURL setup failed");
+		FAIL ("cURL setup failed");
 
 	CURLcode ret;
 	if ((ret = curl_easy_perform (curl)))
-		RPC_FAIL ("HTTP request failed: %s", ctx->curl.curl_error);
+		FAIL ("HTTP request failed: %s", ctx->curl.curl_error);
 
 	long code;
 	char *type;
 	if (curl_easy_getinfo (curl, CURLINFO_RESPONSE_CODE, &code)
 	 || curl_easy_getinfo (curl, CURLINFO_CONTENT_TYPE, &type))
-		RPC_FAIL ("cURL info retrieval failed");
+		FAIL ("cURL info retrieval failed");
 
 	if (code != 200)
-		RPC_FAIL ("unexpected HTTP response code: %ld", code);
+		FAIL ("unexpected HTTP response code: %ld", code);
 
 	if (!expect_content)
 		;  // Let there be anything
