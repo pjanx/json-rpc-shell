@@ -190,6 +190,9 @@ static struct app_context
 
 	iconv_t term_to_utf8;               ///< Terminal encoding to UTF-8
 	iconv_t term_from_utf8;             ///< UTF-8 to terminal encoding
+
+	char *readline_prompt;              ///< The prompt we use for readline
+	bool readline_prompt_shown;         ///< Whether the prompt is shown now
 }
 g_ctx;
 
@@ -302,9 +305,33 @@ log_message_attributed (void *user_data, const char *quote, const char *fmt,
 {
 	FILE *stream = stderr;
 
+	// GNU readline is a huge piece of total crap; it seems that we must do
+	// these incredible shenanigans in order to intersperse readline output
+	// with asynchronous status messages
+	char *saved_line;
+	int saved_point;
+
+	if (g_ctx.readline_prompt_shown)
+	{
+		saved_point = rl_point;
+		saved_line = rl_copy_text (0, rl_end);
+		rl_set_prompt ("");
+		rl_replace_line ("", 0);
+		rl_redisplay ();
+	}
+
 	print_attributed (&g_ctx, stream, user_data, "%s", quote);
 	vprint_attributed (&g_ctx, stream, user_data, fmt, ap);
 	fputs ("\n", stream);
+
+	if (g_ctx.readline_prompt_shown)
+	{
+		rl_set_prompt (g_ctx.readline_prompt);
+		rl_replace_line (saved_line, 0);
+		rl_point = saved_point;
+		rl_redisplay ();
+		free (saved_line);
+	}
 }
 
 static void
@@ -1691,10 +1718,19 @@ on_winch (EV_P_ ev_signal *handle, int revents)
 static void
 on_readline_input (char *line)
 {
+	// Otherwise the prompt is shown at all times
+	g_ctx.readline_prompt_shown = false;
+
 	if (!line)
 	{
+		ev_break (EV_DEFAULT_ EVBREAK_ALL);
+
+		// We must do this here, or the prompt gets printed twice.  *shrug*
 		rl_callback_handler_remove ();
-		ev_break (EV_DEFAULT_ EVBREAK_ONE);
+
+		// Note that we don't set "readline_prompt_shown" back to true.
+		// This is so that we can safely do rl_callback_handler_remove when
+		// the program is terminated in an unusual manner (other than ^D).
 		return;
 	}
 
@@ -1704,6 +1740,8 @@ on_readline_input (char *line)
 	// Stupid readline forces us to use a global variable
 	process_input (&g_ctx, line);
 	free (line);
+
+	g_ctx.readline_prompt_shown = true;
 }
 
 static void
@@ -1876,15 +1914,14 @@ main (int argc, char *argv[])
 		xstrdup_printf ("%s/" PROGRAM_NAME "/history", data_home);
 	(void) read_history (history_path);
 
-	char *prompt;
 	if (!get_attribute_printer (stdout))
-		prompt = xstrdup_printf ("json-rpc> ");
+		g_ctx.readline_prompt = xstrdup_printf ("json-rpc> ");
 	else
 	{
 		// XXX: to be completely correct, we should use tputs, but we cannot
 		const char *prompt_attrs = str_map_find (&g_ctx.config, ATTR_PROMPT);
 		const char *reset_attrs  = str_map_find (&g_ctx.config, ATTR_RESET);
-		prompt = xstrdup_printf ("%c%s%cjson-rpc> %c%s%c",
+		g_ctx.readline_prompt = xstrdup_printf ("%c%s%cjson-rpc> %c%s%c",
 			RL_PROMPT_START_IGNORE, prompt_attrs, RL_PROMPT_END_IGNORE,
 			RL_PROMPT_START_IGNORE, reset_attrs,  RL_PROMPT_END_IGNORE);
 	}
@@ -1909,9 +1946,11 @@ main (int argc, char *argv[])
 	ev_io_start (EV_DEFAULT_ &tty_watcher);
 
 	rl_catch_sigwinch = false;
-	rl_callback_handler_install (prompt, on_readline_input);
-
+	g_ctx.readline_prompt_shown = true;
+	rl_callback_handler_install (g_ctx.readline_prompt, on_readline_input);
 	ev_run (loop, 0);
+	if (g_ctx.readline_prompt_shown)
+		rl_callback_handler_remove ();
 	putchar ('\n');
 
 	// User has terminated the program, let's save the history and clean up
@@ -1928,6 +1967,7 @@ main (int argc, char *argv[])
 	iconv_close (g_ctx.term_to_utf8);
 	g_ctx.backend->destroy (&g_ctx);
 	free (origin);
+	free (g_ctx.readline_prompt);
 	str_map_free (&g_ctx.config);
 	free_terminal ();
 	ev_loop_destroy (loop);
