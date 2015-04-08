@@ -69,6 +69,10 @@ static struct config_item g_config_table[] =
 	{ ATTR_ERROR,      NULL,  "Terminal attributes for errors"           },
 	{ ATTR_INCOMING,   NULL,  "Terminal attributes for incoming traffic" },
 	{ ATTR_OUTGOING,   NULL,  "Terminal attributes for outgoing traffic" },
+
+	{ "ca_file",       NULL,  "OpenSSL trusted CA certificates file"     },
+	{ "ca_path",       NULL,  "OpenSSL trusted CA certificates path"     },
+
 	{ NULL,            NULL,  NULL                                       }
 };
 
@@ -985,6 +989,29 @@ backend_ws_establish_connection (struct app_context *ctx,
 }
 
 static bool
+backend_ws_set_up_ssl_ctx (struct app_context *ctx)
+{
+	struct ws_context *self = &ctx->ws;
+	if (ctx->trust_all)
+	{
+		SSL_CTX_set_verify (self->ssl_ctx, SSL_VERIFY_NONE, NULL);
+		return true;
+	}
+
+	const char *ca_file = str_map_find (&ctx->config, "ca_file");
+	const char *ca_path = str_map_find (&ctx->config, "ca_path");
+	if (ca_file || ca_path)
+	{
+		if (SSL_CTX_load_verify_locations (self->ssl_ctx, ca_file, ca_path))
+			return true;
+		print_warning ("%s: %s",
+			"failed to set locations for trusted CA certificates",
+			ERR_reason_error_string (ERR_get_error ()));
+	}
+	return SSL_CTX_set_default_verify_paths (self->ssl_ctx);
+}
+
+static bool
 backend_ws_initialize_tls (struct app_context *ctx,
 	const char *server_name, struct error **e)
 {
@@ -994,9 +1021,8 @@ backend_ws_initialize_tls (struct app_context *ctx,
 	{
 		if (!(self->ssl_ctx = SSL_CTX_new (SSLv23_client_method ())))
 			goto error_ssl_1;
-		if (ctx->trust_all)
-			SSL_CTX_set_verify (self->ssl_ctx, SSL_VERIFY_NONE, NULL);
-		// XXX: how do we check certificates?
+		if (!backend_ws_set_up_ssl_ctx (ctx))
+			goto error_ssl_2;
 	}
 
 	self->ssl = SSL_new (self->ssl_ctx);
@@ -1530,6 +1556,15 @@ backend_curl_init (struct app_context *ctx,
 			ctx->trust_all ? 0L : 2L)
 	 || curl_easy_setopt (curl, CURLOPT_URL,            endpoint))
 		exit_fatal ("cURL setup failed");
+
+	if (!ctx->trust_all)
+	{
+		const char *ca_file = str_map_find (&ctx->config, "ca_file");
+		const char *ca_path = str_map_find (&ctx->config, "ca_path");
+		if ((ca_file && !curl_easy_setopt (curl, CURLOPT_CAINFO, ca_file))
+		 || (ca_path && !curl_easy_setopt (curl, CURLOPT_CAPATH, ca_path)))
+			exit_fatal ("cURL setup failed");
+	}
 }
 
 static void
