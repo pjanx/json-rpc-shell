@@ -1875,17 +1875,34 @@ on_winch (EV_P_ ev_signal *handle, int revents)
 }
 
 static void
+quit (struct app_context *ctx)
+{
+	if (ctx->backend->on_quit)
+		ctx->backend->on_quit (ctx);
+
+	ev_break (EV_DEFAULT_ EVBREAK_ALL);
+}
+
+static void
+on_terminated (EV_P_ ev_signal *handle, int revents)
+{
+	(void) loop;
+	(void) handle;
+	(void) revents;
+
+	quit (&g_ctx);
+}
+
+static void
 on_readline_input (char *line)
 {
 	// Otherwise the prompt is shown at all times
+	// Stupid readline forces us to use a global variable
 	g_ctx.readline_prompt_shown = false;
 
 	if (!line)
 	{
-		if (g_ctx.backend->on_quit)
-			g_ctx.backend->on_quit (&g_ctx);
-
-		ev_break (EV_DEFAULT_ EVBREAK_ALL);
+		quit (&g_ctx);
 
 		// We must do this here, or the prompt gets printed twice.  *shrug*
 		rl_callback_handler_remove ();
@@ -1899,7 +1916,6 @@ on_readline_input (char *line)
 	if (*line)
 		add_history (line);
 
-	// Stupid readline forces us to use a global variable
 	process_input (&g_ctx, line);
 	free (line);
 
@@ -2099,10 +2115,18 @@ main (int argc, char *argv[])
 		exit_fatal ("libev initialization failed");
 
 	ev_signal winch_watcher;
+	ev_signal term_watcher;
+	ev_signal int_watcher;
 	ev_io tty_watcher;
 
 	ev_signal_init (&winch_watcher, on_winch, SIGWINCH);
 	ev_signal_start (EV_DEFAULT_ &winch_watcher);
+
+	ev_signal_init (&term_watcher, on_terminated, SIGTERM);
+	ev_signal_start (EV_DEFAULT_ &term_watcher);
+
+	ev_signal_init (&int_watcher, on_terminated, SIGINT);
+	ev_signal_start (EV_DEFAULT_ &int_watcher);
 
 	ev_io_init (&tty_watcher, on_tty_readable, STDIN_FILENO, EV_READ);
 	ev_io_start (EV_DEFAULT_ &tty_watcher);
