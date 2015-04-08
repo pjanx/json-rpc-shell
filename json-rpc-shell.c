@@ -1561,8 +1561,8 @@ backend_curl_init (struct app_context *ctx,
 	{
 		const char *ca_file = str_map_find (&ctx->config, "ca_file");
 		const char *ca_path = str_map_find (&ctx->config, "ca_path");
-		if ((ca_file && !curl_easy_setopt (curl, CURLOPT_CAINFO, ca_file))
-		 || (ca_path && !curl_easy_setopt (curl, CURLOPT_CAPATH, ca_path)))
+		if ((ca_file && curl_easy_setopt (curl, CURLOPT_CAINFO, ca_file))
+		 || (ca_path && curl_easy_setopt (curl, CURLOPT_CAPATH, ca_path)))
 			exit_fatal ("cURL setup failed");
 	}
 }
