@@ -1115,7 +1115,7 @@ backend_ws_on_frame_header (void *user_data, const struct ws_parser *parser)
 	// connection when the frame is unmasked
 
 	if (parser->reserved_1 || parser->reserved_2 || parser->reserved_3
-	 || !parser->is_masked  // client -> server payload must be masked
+	 || parser->is_masked  // server -> client payload must not be masked
 	 || (ws_is_control_frame (parser->opcode) &&
 		(!parser->is_fin || parser->payload_len > WS_MAX_CONTROL_PAYLOAD_LEN))
 	 || (!ws_is_control_frame (parser->opcode) &&
