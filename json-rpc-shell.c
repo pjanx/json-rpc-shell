@@ -785,7 +785,7 @@ backend_ws_on_data (struct app_context *ctx, const void *data, size_t len)
 		// Finished the handshake, return to caller
 		// (we run a separate loop to wait for the handshake to finish)
 		self->state = WS_HANDLER_OPEN;
-		ev_unloop (EV_DEFAULT_ EVUNLOOP_ONE);
+		ev_break (EV_DEFAULT_ EVBREAK_ONE);
 
 		if ((len -= n_parsed))
 			return ws_parser_push (&self->parser,
@@ -835,7 +835,7 @@ backend_ws_close_connection (struct app_context *ctx)
 		if (!self->e)
 			error_set (&self->e, "unexpected connection close");
 
-		ev_unloop (EV_DEFAULT_ EVUNLOOP_ONE);
+		ev_break (EV_DEFAULT_ EVBREAK_ONE);
 	}
 }
 
@@ -1192,7 +1192,7 @@ backend_ws_on_message (struct app_context *ctx,
 	}
 
 	str_append_data (self->response_buffer, data, len);
-	ev_unloop (EV_DEFAULT_ EVUNLOOP_ONE);
+	ev_break (EV_DEFAULT_ EVBREAK_ONE);
 	return true;
 }
 
@@ -1334,7 +1334,7 @@ backend_ws_connect (struct app_context *ctx, struct error **e)
 	ev_timer_start (EV_DEFAULT_ &self->timeout_watcher);
 	self->waiting_for_event = true;
 
-	ev_loop (EV_DEFAULT_ 0);
+	ev_run (EV_DEFAULT_ 0);
 
 	self->waiting_for_event = false;
 	ev_timer_stop (EV_DEFAULT_ &self->timeout_watcher);
@@ -1387,7 +1387,7 @@ backend_ws_make_call (struct app_context *ctx,
 		self->response_buffer = buf;
 		self->waiting_for_event = true;
 
-		ev_loop (EV_DEFAULT_ 0);
+		ev_run (EV_DEFAULT_ 0);
 
 		self->waiting_for_event = false;
 		self->response_buffer = NULL;
