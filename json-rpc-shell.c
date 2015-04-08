@@ -956,7 +956,7 @@ backend_ws_establish_connection (struct app_context *ctx,
 		// we don't really need this, so we can let it quietly fail
 		char buf[NI_MAXHOST];
 		err = getnameinfo (gai_iter->ai_addr, gai_iter->ai_addrlen,
-			buf, sizeof buf, NULL, 0, 0);
+			buf, sizeof buf, NULL, 0, NI_NUMERICHOST);
 		if (err)
 			print_debug ("%s: %s", "getnameinfo", gai_strerror (err));
 		else
