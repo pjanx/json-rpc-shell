@@ -962,9 +962,12 @@ backend_ws_establish_connection (struct app_context *ctx,
 		else
 			real_host = buf;
 
-		char *address = format_host_port_pair (real_host, port);
-		print_status ("connecting to %s...", address);
-		free (address);
+		if (ctx->verbose)
+		{
+			char *address = format_host_port_pair (real_host, port);
+			print_status ("connecting to %s...", address);
+			free (address);
+		}
 
 		if (!connect (sockfd, gai_iter->ai_addr, gai_iter->ai_addrlen))
 			break;
