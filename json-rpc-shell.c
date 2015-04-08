@@ -79,7 +79,7 @@ static struct config_item g_config_table[] =
 // complicated and we implement it all by ourselves.
 //
 // Luckily on a higher level the application doesn't need to bother itself with
-// the details and the backend API can be very simple..
+// the details and the backend API can be very simple.
 
 struct app_context;
 
@@ -906,7 +906,6 @@ backend_ws_write (struct app_context *ctx, const void *data, size_t len)
 	if (!soft_assert (ctx->ws.server_fd != -1))
 		return false;
 
-	bool result = true;
 	if (ctx->ws.ssl)
 	{
 		// TODO: call SSL_get_error() to detect if a clean shutdown has occured
@@ -914,15 +913,15 @@ backend_ws_write (struct app_context *ctx, const void *data, size_t len)
 		{
 			print_debug ("%s: %s: %s", __func__, "SSL_write",
 				ERR_error_string (ERR_get_error (), NULL));
-			result = false;
+			return false;
 		}
 	}
 	else if (write (ctx->ws.server_fd, data, len) != (ssize_t) len)
 	{
 		print_debug ("%s: %s: %s", __func__, "write", strerror (errno));
-		result = false;
+		return false;
 	}
-	return result;
+	return true;
 }
 
 static bool
@@ -1956,7 +1955,7 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv,
 
 	struct opt_handler oh;
 	opt_handler_init (&oh, argc, argv, opts,
-		"ENDPOINT", "Trivial JSON-RPC shell.");
+		"ENDPOINT", "Simple JSON-RPC shell.");
 
 	int c;
 	while ((c = opt_handler_get (&oh)) != -1)
