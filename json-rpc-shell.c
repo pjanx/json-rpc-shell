@@ -85,12 +85,22 @@ struct app_context;
 
 struct backend_iface
 {
+	/// Prepare the backend for RPC calls
 	void (*init) (struct app_context *ctx,
 		const char *endpoint, struct http_parser_url *url);
+
+	/// Add an HTTP header to send with requests
 	void (*add_header) (struct app_context *ctx, const char *header);
+
+	/// Make an RPC call
 	bool (*make_call) (struct app_context *ctx,
 		const char *request, bool expect_content,
 		struct str *buf, struct error **e);
+
+	/// Do everything necessary to deal with ev_break(EVBREAK_ALL)
+	void (*on_quit) (struct app_context *ctx);
+
+	/// Free any resources
 	void (*destroy) (struct app_context *ctx);
 };
 
@@ -1403,6 +1413,16 @@ backend_ws_make_call (struct app_context *ctx,
 }
 
 static void
+backend_ws_on_quit (struct app_context *ctx)
+{
+	struct ws_context *self = &ctx->ws;
+	if (self->waiting_for_event && !self->e)
+		error_set (&self->e, "aborted by user");
+
+	// We also have to be careful not to change the ev_break status
+}
+
+static void
 backend_ws_destroy (struct app_context *ctx)
 {
 	struct ws_context *self = &ctx->ws;
@@ -1432,6 +1452,7 @@ static struct backend_iface g_backend_ws =
 	.init       = backend_ws_init,
 	.add_header = backend_ws_add_header,
 	.make_call  = backend_ws_make_call,
+	.on_quit    = backend_ws_on_quit,
 	.destroy    = backend_ws_destroy,
 };
 
@@ -1861,6 +1882,9 @@ on_readline_input (char *line)
 
 	if (!line)
 	{
+		if (g_ctx.backend->on_quit)
+			g_ctx.backend->on_quit (&g_ctx);
+
 		ev_break (EV_DEFAULT_ EVBREAK_ALL);
 
 		// We must do this here, or the prompt gets printed twice.  *shrug*
