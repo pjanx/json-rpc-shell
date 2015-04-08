@@ -2148,8 +2148,6 @@ main (int argc, char *argv[])
 	// the socket don't terminate the program
 	(void) signal (SIGPIPE, SIG_IGN);
 
-	// readline 6.3 doesn't immediately redraw the terminal upon reception
-	// of SIGWINCH, so we must run it in an event loop to remediate that
 	struct ev_loop *loop = EV_DEFAULT;
 	if (!loop)
 		exit_fatal ("libev initialization failed");
@@ -2171,10 +2169,14 @@ main (int argc, char *argv[])
 	ev_io_init (&tty_watcher, on_tty_readable, STDIN_FILENO, EV_READ);
 	ev_io_start (EV_DEFAULT_ &tty_watcher);
 
+	// readline 6.3 doesn't immediately redraw the terminal upon reception
+	// of SIGWINCH, so we must run it in an event loop to remediate that
 	rl_catch_sigwinch = false;
 	g_ctx.readline_prompt_shown = true;
 	rl_callback_handler_install (g_ctx.readline_prompt, on_readline_input);
+
 	ev_run (loop, 0);
+
 	if (g_ctx.readline_prompt_shown)
 		rl_callback_handler_remove ();
 	putchar ('\n');
