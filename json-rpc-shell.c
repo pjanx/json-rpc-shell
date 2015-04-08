@@ -1066,16 +1066,19 @@ backend_ws_send_message (struct app_context *ctx,
 		return false;
 	str_pack_u32 (&header, mask);
 
-	// XXX: maybe we should do this in a loop, who knows how large this can be
-	char masked[len];
-	memcpy (masked, data, len);
-	ws_parser_unmask (masked, len, mask);
-
-	bool result = true;
-	if (!backend_ws_write (ctx, header.str, header.len)
-	 || !backend_ws_write (ctx, masked, len))
-		result = false;
+	bool result = backend_ws_write (ctx, header.str, header.len);
 	str_free (&header);
+	while (result && len)
+	{
+		size_t block_size = MIN (len, 1 << 16);
+		char masked[block_size];
+		memcpy (masked, data, block_size);
+		ws_parser_unmask (masked, block_size, mask);
+		result = backend_ws_write (ctx, masked, block_size);
+
+		len -= block_size;
+		data = (const uint8_t *) data + block_size;
+	}
 	return result;
 }
 
