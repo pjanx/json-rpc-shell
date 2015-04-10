@@ -1152,6 +1152,7 @@ struct server_context
 {
 	ev_signal sigterm_watcher;          ///< Got SIGTERM
 	ev_signal sigint_watcher;           ///< Got SIGINT
+	ev_timer quit_timeout_watcher;      ///< Quit timeout watcher
 	bool quitting;                      ///< User requested quitting
 
 	struct listener *listeners;         ///< Listeners
@@ -1164,6 +1165,11 @@ struct server_context
 	struct str_map config;              ///< Server configuration
 };
 
+static void initiate_quit (struct server_context *self);
+static void try_finish_quit (struct server_context *self);
+static void on_quit_timeout (EV_P_ ev_watcher *watcher, int revents);
+static void close_listeners (struct server_context *self);
+
 static void
 server_context_init (struct server_context *self)
 {
@@ -1171,9 +1177,9 @@ server_context_init (struct server_context *self)
 
 	str_map_init (&self->config);
 	load_config_defaults (&self->config, g_config_table);
+	ev_timer_init (&self->quit_timeout_watcher, on_quit_timeout, 0., 0.);
+	self->quit_timeout_watcher.data = self;
 }
-
-static void close_listeners (struct server_context *self);
 
 static void
 server_context_free (struct server_context *self)
@@ -1761,14 +1767,8 @@ struct client_impl
 	/// Initialize the client as needed
 	void (*init) (struct client *client);
 
-	// TODO: a method for graceful shutdown which will, in the case of
-	//   WebSockets, actually send a "shutdown" close packet, and in the case
-	//   of FastCGI will FCGI_END_REQUEST everything with FCGI_REQUEST_COMPLETE
-	//   and FCGI_OVERLOADED all incoming requests in the meantime (the FastCGI
-	//   specification isn't very clear about how we should respond to this).
-	//
-	//   We then should set up a timer for about a second until we kill all
-	//   clients for good.
+	/// Attempt a graceful shutdown
+	void (*shutdown) (struct client *client);
 
 	/// Do any additional cleanup
 	void (*destroy) (struct client *client);
@@ -1817,6 +1817,8 @@ client_remove (struct client *client)
 	xclose (client->socket_fd);
 	client_free (client);
 	free (client);
+
+	try_finish_quit (ctx);
 }
 
 // - - FastCGI - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -1908,6 +1910,16 @@ client_fcgi_init (struct client *client)
 }
 
 static void
+client_fcgi_shutdown (struct client *client)
+{
+	struct client_fcgi *self = client->impl_data;
+
+	// TODO: respond with FCGI_END_REQUEST: FCGI_REQUEST_COMPLETE to everything,
+	//   and start sending out FCGI_OVERLOADED to all incoming requests.  The
+	//   FastCGI specification isn't very clear about what we should do.
+}
+
+static void
 client_fcgi_destroy (struct client *client)
 {
 	struct client_fcgi *self = client->impl_data;
@@ -1927,9 +1939,10 @@ client_fcgi_push (struct client *client, const void *data, size_t len)
 
 static struct client_impl g_client_fcgi =
 {
-	.init    = client_fcgi_init,
-	.destroy = client_fcgi_destroy,
-	.push    = client_fcgi_push,
+	.init     = client_fcgi_init,
+	.shutdown = client_fcgi_shutdown,
+	.destroy  = client_fcgi_destroy,
+	.push     = client_fcgi_push,
 };
 
 // - - SCGI  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -2087,6 +2100,13 @@ client_ws_init (struct client *client)
 }
 
 static void
+client_ws_shutdown (struct client *client)
+{
+	struct client_ws *self = client->impl_data;
+	ws_handler_close (&self->handler, WS_STATUS_GOING_AWAY, NULL, 0);
+}
+
+static void
 client_ws_destroy (struct client *client)
 {
 	struct client_ws *self = client->impl_data;
@@ -2105,11 +2125,11 @@ client_ws_push (struct client *client, const void *data, size_t len)
 
 static struct client_impl g_client_ws =
 {
-	.init    = client_ws_init,
-	.destroy = client_ws_destroy,
-	.push    = client_ws_push,
+	.init     = client_ws_init,
+	.shutdown = client_ws_shutdown,
+	.destroy  = client_ws_destroy,
+	.push     = client_ws_push,
 };
-
 
 // --- Basic server stuff ------------------------------------------------------
 
@@ -2123,7 +2143,6 @@ struct listener
 static void
 close_listeners (struct server_context *self)
 {
-	// TODO: factor out the closing act, to be used in initiate_quit()
 	for (size_t i = 0; i < self->n_listeners; i++)
 	{
 		struct listener *listener = &self->listeners[i];
@@ -2134,6 +2153,39 @@ close_listeners (struct server_context *self)
 		xclose (listener->fd);
 		listener->fd = -1;
 	}
+}
+
+static void
+try_finish_quit (struct server_context *self)
+{
+	if (!self->quitting || self->clients)
+		return;
+
+	ev_timer_stop (EV_DEFAULT_ &self->quit_timeout_watcher);
+	ev_break (EV_DEFAULT_ EVBREAK_ALL);
+}
+
+static void
+on_quit_timeout (EV_P_ ev_watcher *watcher, int revents)
+{
+	struct server_context *self = watcher->data;
+	(void) loop;
+	(void) revents;
+
+	LIST_FOR_EACH (struct client, iter, self->clients)
+		client_remove (iter);
+}
+
+static void
+initiate_quit (struct server_context *self)
+{
+	close_listeners (self);
+	LIST_FOR_EACH (struct client, iter, self->clients)
+		if (iter->impl->shutdown)
+			iter->impl->shutdown (iter->impl_data);
+
+	ev_timer_set (&self->quit_timeout_watcher, 3., 0.);
+	self->quitting = true;
 }
 
 static bool
@@ -2217,6 +2269,7 @@ make_client (EV_P_ struct client_impl *impl, int sock_fd)
 static void
 on_client_available (EV_P_ ev_io *watcher, int revents)
 {
+	struct server_context *ctx = ev_userdata (loop);
 	struct listener *listener = watcher->data;
 	(void) revents;
 
@@ -2235,7 +2288,7 @@ on_client_available (EV_P_ ev_io *watcher, int revents)
 	ev_io_stop (EV_A_ watcher);
 
 	print_fatal ("%s: %s", "accept", strerror (errno));
-	// TODO: initiate_quit (ctx);
+	initiate_quit (ctx);
 }
 
 // --- Application setup -------------------------------------------------------
