@@ -1332,7 +1332,7 @@ backend_ws_connect (struct app_context *ctx, struct error **e)
 	struct str request;
 	str_init (&request);
 
-	str_append_printf (&request, "GET %s HTTP/1,1\r\n", url_path);
+	str_append_printf (&request, "GET %s HTTP/1.1\r\n", url_path);
 	// TODO: omit the port if it's the default (check RFC for "SHOULD" or ...)
 	str_append_printf (&request, "Host: %s:%s\r\n", url_host, url_port);
 	str_append_printf (&request, "Upgrade: websocket\r\n");
