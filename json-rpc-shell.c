@@ -1294,6 +1294,7 @@ backend_ws_connect (struct app_context *ctx, struct error **e)
 		self->url.field_data[UF_SCHEMA].off,
 		self->url.field_data[UF_SCHEMA].len);
 	bool use_tls = !strcasecmp_ascii (url_schema, "wss");
+	free (url_schema);
 
 	char *url_host = xstrndup (self->endpoint +
 		self->url.field_data[UF_HOST].off,
@@ -1304,10 +1305,18 @@ backend_ws_connect (struct app_context *ctx, struct error **e)
 			self->url.field_data[UF_PORT].len)
 		: xstrdup (use_tls ? "443" : "80");
 
-	// FIXME: should include "?UF_QUERY" as well, if present
-	char *url_path = xstrndup (self->endpoint +
+	struct str url_path;
+	str_init (&url_path);
+	str_append_data (&url_path, self->endpoint +
 		self->url.field_data[UF_PATH].off,
 		self->url.field_data[UF_PATH].len);
+	if (self->url.field_set & (1 << UF_QUERY))
+	{
+		str_append_c (&url_path, '?');
+		str_append_data (&url_path, self->endpoint +
+			self->url.field_data[UF_QUERY].off,
+			self->url.field_data[UF_QUERY].len);
+	}
 
 	if (!backend_ws_establish_connection (ctx, url_host, url_port, e))
 		goto fail_1;
@@ -1332,7 +1341,7 @@ backend_ws_connect (struct app_context *ctx, struct error **e)
 	struct str request;
 	str_init (&request);
 
-	str_append_printf (&request, "GET %s HTTP/1.1\r\n", url_path);
+	str_append_printf (&request, "GET %s HTTP/1.1\r\n", url_path.str);
 	// TODO: omit the port if it's the default (check RFC for "SHOULD" or ...)
 	str_append_printf (&request, "Host: %s:%s\r\n", url_host, url_port);
 	str_append_printf (&request, "Upgrade: websocket\r\n");
@@ -1395,10 +1404,9 @@ fail_2:
 		self->server_fd = -1;
 	}
 fail_1:
-	free (url_schema);
 	free (url_host);
 	free (url_port);
-	free (url_path);
+	str_free (&url_path);
 	return result;
 }
 
