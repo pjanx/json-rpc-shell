@@ -1307,9 +1307,12 @@ backend_ws_connect (struct app_context *ctx, struct error **e)
 
 	struct str url_path;
 	str_init (&url_path);
-	str_append_data (&url_path, self->endpoint +
-		self->url.field_data[UF_PATH].off,
-		self->url.field_data[UF_PATH].len);
+	if (self->url.field_set & (1 << UF_PATH))
+		str_append_data (&url_path, self->endpoint +
+			self->url.field_data[UF_PATH].off,
+			self->url.field_data[UF_PATH].len);
+	else
+		str_append_c (&url_path, '/');
 	if (self->url.field_set & (1 << UF_QUERY))
 	{
 		str_append_c (&url_path, '?');
