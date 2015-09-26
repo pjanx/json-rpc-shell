@@ -1,7 +1,8 @@
 json-rpc-shell
 ==============
+:compact-option:
 
-`json-rpc-shell' is a simple shell for running JSON-RPC 2.0 queries.
+'json-rpc-shell' is a simple shell for running JSON-RPC 2.0 queries.
 
 This software has been created as a replacement for the following shell, which
 is written in Java: http://software.dzhuvinov.com/json-rpc-2.0-shell.html
@@ -14,7 +15,7 @@ Supported transports
  - WebSocket over TLS
 
 WebSockets
-----------
+~~~~~~~~~~
 The WebSocket transport is rather experimental.  As the JSON-RPC 2.0 spec
 doesn't say almost anything about the underlying transports, I'll shortly
 describe the way it's implemented: every request is sent as a single text
@@ -27,7 +28,7 @@ the higher-level protocol (the "Sec-Ws-Protocol" HTTP field).
 Building and Running
 --------------------
 Build dependencies: CMake, pkg-config, help2man,
-                    liberty (included), http-parser (included)
+                    liberty (included), http-parser (included) +
 Runtime dependencies: libev, Jansson, cURL, readline, openssl
 
  $ git clone --recursive https://github.com/pjanouch/json-rpc-shell.git
@@ -37,16 +38,18 @@ Runtime dependencies: libev, Jansson, cURL, readline, openssl
  $ make
 
 To install the application, you can do either the usual:
+
  # make install
 
 Or you can try telling CMake to make a package for you.  For Debian it is:
+
  $ cpack -G DEB
  # dpkg -i json-rpc-shell-*.deb
 
-Note that for versions of CMake before 2.8.9, you need to prefix cpack with
-`fakeroot' or file ownership will end up wrong.
+Note that for versions of CMake before 2.8.9, you need to prefix `cpack` with
+`fakeroot` or file ownership will end up wrong.
 
-Run the program with `--help' to obtain usage information.
+Run the program with `--help` to obtain usage information.
 
 Contributing and Support
 ------------------------
@@ -56,7 +59,7 @@ the developer, feel free to join me at irc://anathema.irc.so, channel #anathema.
 
 License
 -------
-`json-rpc-shell' is written by Přemysl Janouch <p.janouch@gmail.com>.
+'json-rpc-shell' is written by Přemysl Janouch <p.janouch@gmail.com>.
 
 You may use the software under the terms of the ISC license, the text of which
 is included within the package, or, at your option, you may relicense the work
