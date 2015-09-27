@@ -29,11 +29,9 @@ Build dependencies: CMake, pkg-config, help2man, libmagic,
                     liberty (included), http-parser (included)
 Runtime dependencies: libev, Jansson
 
- $ git clone https://github.com/pjanouch/acid.git
- $ git submodule init
- $ git submodule update
- $ mkdir build
- $ cd build
+ $ git clone --recursive https://github.com/pjanouch/acid.git
+ $ mkdir acid/build
+ $ cd acid/build
  $ cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Debug
  $ make
 
