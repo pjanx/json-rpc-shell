@@ -1,7 +1,7 @@
 acid
 ====
 
-`acid' is A Continuous Integration Daemon.  Currently under heavy development.
+'acid' is A Continuous Integration Daemon.  Currently under heavy development.
 Right now I'm working on a demo JSON-RPC server that will serve as the basis for
 the final daemon.
 
@@ -9,12 +9,12 @@ The aim of this project is to provide a dumbed-down alternative to Travis CI.
 I find it way too complex to set up and run in a local setting, while the basic
 gist of it is actually very simple -- run some stuff on new git commits.
 
-`acid' will provide a JSON-RPC 2.0 service for frontends over FastCGI, SCGI, or
+'acid' will provide a JSON-RPC 2.0 service for frontends over FastCGI, SCGI, or
 WebSockets, as well as a webhook endpoint for notifications about new commits.
 The daemon is supposed to be "firewalled" by a normal HTTP server and it will
 not provide TLS support to secure the communications.
 
-`acid' will be able to tell you about build results via e-mail and/or IRC.
+'acid' will be able to tell you about build results via e-mail and/or IRC.
 
 Builds will only be supported on the same machine as the daemon.  Eventually I
 might be able to add support for fully replicable builds using Docker.
@@ -26,7 +26,7 @@ in a somewhat clean manner.  Feel free to contribute.
 Building and Installing
 -----------------------
 Build dependencies: CMake, pkg-config, help2man, libmagic,
-                    liberty (included), http-parser (included)
+                    liberty (included), http-parser (included) +
 Runtime dependencies: libev, Jansson
 
  $ git clone --recursive https://github.com/pjanouch/acid.git
@@ -36,14 +36,16 @@ Runtime dependencies: libev, Jansson
  $ make
 
 To install the application, you can do either the usual:
+
  # make install
 
 Or you can try telling CMake to make a package for you.  For Debian it is:
+
  $ cpack -G DEB
  # dpkg -i acid-*.deb
 
-Note that for versions of CMake before 2.8.9, you need to prefix cpack with
-`fakeroot' or file ownership will end up wrong.
+Note that for versions of CMake before 2.8.9, you need to prefix `cpack` with
+`fakeroot` or file ownership will end up wrong.
 
 Usage
 -----
@@ -57,7 +59,7 @@ the developer, feel free to join me at irc://anathema.irc.so, channel #anathema.
 
 License
 -------
-`acid' is written by Přemysl Janouch <p.janouch@gmail.com>.
+'acid' is written by Přemysl Janouch <p.janouch@gmail.com>.
 
 You may use the software under the terms of the ISC license, the text of which
 is included within the package, or, at your option, you may relicense the work
