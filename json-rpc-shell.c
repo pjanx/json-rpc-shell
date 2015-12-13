@@ -21,18 +21,27 @@
 /// Some arbitrary limit for the history file
 #define HISTORY_LIMIT 10000
 
-// String constants for all attributes we use for output
-#define ATTR_PROMPT    "attr_prompt"
-#define ATTR_RESET     "attr_reset"
-#define ATTR_WARNING   "attr_warning"
-#define ATTR_ERROR     "attr_error"
-#define ATTR_INCOMING  "attr_incoming"
-#define ATTR_OUTGOING  "attr_outgoing"
+// A table of all attributes we use for output
+#define ATTR_TABLE(XX)                                                         \
+	XX( PROMPT,      "prompt",      "Terminal attrs for the prompt"       )    \
+	XX( RESET,       "reset",       "String to reset terminal attributes" )    \
+	XX( WARNING,     "warning",     "Terminal attrs for warnings"         )    \
+	XX( ERROR,       "error",       "Terminal attrs for errors"           )    \
+	XX( INCOMING,    "incoming",    "Terminal attrs for incoming traffic" )    \
+	XX( OUTGOING,    "outgoing",    "Terminal attrs for outgoing traffic" )
+
+enum
+{
+#define XX(x, y, z) ATTR_ ## x,
+	ATTR_TABLE (XX)
+#undef XX
+	ATTR_COUNT
+};
 
 // User data for logger functions to enable formatted logging
-#define print_fatal_data    ATTR_ERROR
-#define print_error_data    ATTR_ERROR
-#define print_warning_data  ATTR_WARNING
+#define print_fatal_data    ((void *) ATTR_ERROR)
+#define print_error_data    ((void *) ATTR_ERROR)
+#define print_warning_data  ((void *) ATTR_WARNING)
 
 #define LIBERTY_WANT_SSL
 #define LIBERTY_WANT_PROTO_HTTP
@@ -62,23 +71,6 @@
 		error_set (e, __VA_ARGS__);                                            \
 		return false;                                                          \
 	BLOCK_END
-
-// --- Configuration (application-specific) ------------------------------------
-
-static struct simple_config_item g_config_table[] =
-{
-	{ ATTR_PROMPT,     NULL,  "Terminal attributes for the prompt"       },
-	{ ATTR_RESET,      NULL,  "String to reset terminal attributes"      },
-	{ ATTR_WARNING,    NULL,  "Terminal attributes for warnings"         },
-	{ ATTR_ERROR,      NULL,  "Terminal attributes for errors"           },
-	{ ATTR_INCOMING,   NULL,  "Terminal attributes for incoming traffic" },
-	{ ATTR_OUTGOING,   NULL,  "Terminal attributes for outgoing traffic" },
-
-	{ "ca_file",       NULL,  "OpenSSL trusted CA certificates file"     },
-	{ "ca_path",       NULL,  "OpenSSL trusted CA certificates path"     },
-
-	{ NULL,            NULL,  NULL                                       }
-};
 
 // --- Terminal ----------------------------------------------------------------
 
@@ -233,6 +225,8 @@ ws_context_init (struct ws_context *self)
 	str_vector_init (&self->extra_headers);
 }
 
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
 struct curl_context
 {
 	CURL *curl;                         ///< cURL handle
@@ -262,7 +256,10 @@ static struct app_context
 	struct ws_context ws;               ///< WebSockets backend data
 	struct curl_context curl;           ///< cURL backend data
 
-	struct str_map config;              ///< Program configuration
+	char *attrs_defaults[ATTR_COUNT];   ///< Default terminal attributes
+	char *attrs[ATTR_COUNT];            ///< Terminal attributes
+
+	struct config config;               ///< Program configuration
 	enum color_mode color_mode;         ///< Colour output mode
 	bool pretty_print;                  ///< Whether to pretty print
 	bool verbose;                       ///< Print requests
@@ -278,6 +275,146 @@ static struct app_context
 	bool readline_prompt_shown;         ///< Whether the prompt is shown now
 }
 g_ctx;
+
+// --- Configuration -----------------------------------------------------------
+
+static void on_config_attribute_change (struct config_item *item);
+
+static struct config_schema g_config_connection[] =
+{
+	{ .name      = "tls_ca_file",
+	  .comment   = "OpenSSL CA bundle file",
+	  .type      = CONFIG_ITEM_STRING },
+	{ .name      = "tls_ca_path",
+	  .comment   = "OpenSSL CA bundle path",
+	  .type      = CONFIG_ITEM_STRING },
+	{}
+};
+
+static struct config_schema g_config_attributes[] =
+{
+#define XX(x, y, z) { .name = y, .comment = z, .type = CONFIG_ITEM_STRING, \
+	.on_change = on_config_attribute_change },
+	ATTR_TABLE (XX)
+#undef XX
+	{}
+};
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+static void
+load_config_connection (struct config_item *subtree, void *user_data)
+{
+	config_schema_apply_to_object (g_config_connection, subtree, user_data);
+}
+
+static void
+load_config_attributes (struct config_item *subtree, void *user_data)
+{
+	config_schema_apply_to_object (g_config_attributes, subtree, user_data);
+}
+
+static void
+register_config_modules (struct app_context *ctx)
+{
+	struct config *config = &ctx->config;
+	config_register_module (config, "connection", load_config_connection, ctx);
+	config_register_module (config, "attributes", load_config_attributes, ctx);
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+static const char *
+get_config_string (struct config_item *root, const char *key)
+{
+	struct config_item *item = config_item_get (root, key, NULL);
+	hard_assert (item);
+	if (item->type == CONFIG_ITEM_NULL)
+		return NULL;
+	hard_assert (config_item_type_is_string (item->type));
+	return item->value.string.str;
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+static void
+save_configuration (struct config_item *root, const char *path_hint)
+{
+	struct str data;
+	str_init (&data);
+
+	str_append (&data,
+		"# " PROGRAM_NAME " " PROGRAM_VERSION " configuration file\n"
+		"#\n"
+		"# Relative paths are searched for in ${XDG_CONFIG_HOME:-~/.config}\n"
+		"# /" PROGRAM_NAME " as well as in $XDG_CONFIG_DIRS/" PROGRAM_NAME "\n"
+		"#\n"
+		"# All text must be in UTF-8.\n"
+		"\n");
+	config_item_write (root, true, &data);
+
+	struct error *e = NULL;
+	char *filename = write_configuration_file (path_hint, &data, &e);
+	str_free (&data);
+
+	if (!filename)
+	{
+		print_error ("%s: %s", "saving configuration failed", e->message);
+		error_free (e);
+	}
+	else
+		print_status ("configuration written to `%s'", filename);
+	free (filename);
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+// TODO: consider moving to liberty, degesch has exactly the same function
+static struct config_item *
+load_configuration_file (const char *filename, struct error **e)
+{
+	struct config_item *root = NULL;
+
+	struct str data;
+	str_init (&data);
+	if (!read_file (filename, &data, e))
+		goto end;
+
+	struct error *error = NULL;
+	if (!(root = config_item_parse (data.str, data.len, false, &error)))
+	{
+		error_set (e, "parse error: %s", error->message);
+		error_free (error);
+	}
+end:
+	str_free (&data);
+	return root;
+}
+
+static void
+load_configuration (struct app_context *ctx)
+{
+	char *filename = resolve_filename
+		(PROGRAM_NAME ".conf", resolve_relative_config_filename);
+	if (!filename)
+		return;
+
+	struct error *e = NULL;
+	struct config_item *root = load_configuration_file (filename, &e);
+	free (filename);
+
+	if (e)
+	{
+		print_error ("error loading configuration: %s", e->message);
+		error_free (e);
+		exit (EXIT_FAILURE);
+	}
+	if (root)
+	{
+		config_load (&ctx->config, root);
+		config_schema_call_changed (ctx->config.root);
+	}
+}
 
 // --- Attributed output -------------------------------------------------------
 
@@ -301,30 +438,24 @@ get_attribute_printer (FILE *stream)
 
 static void
 vprint_attributed (struct app_context *ctx,
-	FILE *stream, const char *attribute, const char *fmt, va_list ap)
+	FILE *stream, intptr_t attribute, const char *fmt, va_list ap)
 {
 	terminal_printer_fn printer = get_attribute_printer (stream);
 	if (!attribute)
 		printer = NULL;
 
 	if (printer)
-	{
-		const char *value = str_map_find (&ctx->config, attribute);
-		tputs (value, 1, printer);
-	}
+		tputs (ctx->attrs[attribute], 1, printer);
 
 	vfprintf (stream, fmt, ap);
 
 	if (printer)
-	{
-		const char *value = str_map_find (&ctx->config, ATTR_RESET);
-		tputs (value, 1, printer);
-	}
+		tputs (ctx->attrs[ATTR_RESET], 1, printer);
 }
 
 static void
 print_attributed (struct app_context *ctx,
-	FILE *stream, const char *attribute, const char *fmt, ...)
+	FILE *stream, intptr_t attribute, const char *fmt, ...)
 {
 	va_list ap;
 	va_start (ap, fmt);
@@ -353,8 +484,8 @@ log_message_attributed (void *user_data, const char *quote, const char *fmt,
 		rl_redisplay ();
 	}
 
-	print_attributed (&g_ctx, stream, user_data, "%s", quote);
-	vprint_attributed (&g_ctx, stream, user_data, fmt, ap);
+	print_attributed (&g_ctx, stream, (intptr_t) user_data, "%s", quote);
+	vprint_attributed (&g_ctx, stream, (intptr_t) user_data, fmt, ap);
 	fputs ("\n", stream);
 
 	if (g_ctx.readline_prompt_shown)
@@ -370,35 +501,30 @@ log_message_attributed (void *user_data, const char *quote, const char *fmt,
 static void
 init_colors (struct app_context *ctx)
 {
+	char **defaults = ctx->attrs_defaults;
+#define INIT_ATTR(id, ti) defaults[ATTR_ ## id] = xstrdup ((ti))
+
 	// Use escape sequences from terminfo if possible, and SGR as a fallback
 	if (init_terminal ())
 	{
-		const char *attrs[][2] =
-		{
-			{ ATTR_PROMPT,   enter_bold_mode         },
-			{ ATTR_RESET,    exit_attribute_mode     },
-			{ ATTR_WARNING,  g_terminal.color_set[3] },
-			{ ATTR_ERROR,    g_terminal.color_set[1] },
-			{ ATTR_INCOMING, ""                      },
-			{ ATTR_OUTGOING, ""                      },
-		};
-		for (size_t i = 0; i < N_ELEMENTS (attrs); i++)
-			str_map_set (&ctx->config, attrs[i][0], xstrdup (attrs[i][1]));
+		INIT_ATTR (PROMPT,   enter_bold_mode);
+		INIT_ATTR (RESET,    exit_attribute_mode);
+		INIT_ATTR (WARNING,  g_terminal.color_set[COLOR_YELLOW]);
+		INIT_ATTR (ERROR,    g_terminal.color_set[COLOR_RED]);
+		INIT_ATTR (INCOMING, "");
+		INIT_ATTR (OUTGOING, "");
 	}
 	else
 	{
-		const char *attrs[][2] =
-		{
-			{ ATTR_PROMPT,   "\x1b[1m"               },
-			{ ATTR_RESET,    "\x1b[0m"               },
-			{ ATTR_WARNING,  "\x1b[33m"              },
-			{ ATTR_ERROR,    "\x1b[31m"              },
-			{ ATTR_INCOMING, ""                      },
-			{ ATTR_OUTGOING, ""                      },
-		};
-		for (size_t i = 0; i < N_ELEMENTS (attrs); i++)
-			str_map_set (&ctx->config, attrs[i][0], xstrdup (attrs[i][1]));
+		INIT_ATTR (PROMPT,   "\x1b[1m");
+		INIT_ATTR (RESET,    "\x1b[0m");
+		INIT_ATTR (WARNING,  "\x1b[33m");
+		INIT_ATTR (ERROR,    "\x1b[31m");
+		INIT_ATTR (INCOMING, "");
+		INIT_ATTR (OUTGOING, "");
 	}
+
+#undef INIT_ATTR
 
 	switch (ctx->color_mode)
 	{
@@ -416,150 +542,42 @@ init_colors (struct app_context *ctx)
 	}
 
 	g_log_message_real = log_message_attributed;
+
+	// Apply the default values so that we start with any formatting at all
+	config_schema_call_changed
+		(config_item_get (ctx->config.root, "attributes", NULL));
 }
 
-// --- Configuration loading ---------------------------------------------------
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-static bool
-read_hexa_escape (const char **cursor, struct str *output)
+static ssize_t
+attr_by_name (const char *name)
 {
-	int i;
-	char c, code = 0;
-
-	for (i = 0; i < 2; i++)
+	static const char *table[ATTR_COUNT] =
 	{
-		c = tolower (*(*cursor));
-		if (c >= '0' && c <= '9')
-			code = (code << 4) | (c - '0');
-		else if (c >= 'a' && c <= 'f')
-			code = (code << 4) | (c - 'a' + 10);
-		else
-			break;
+#define XX(x, y, z) [ATTR_ ## x] = y,
+		ATTR_TABLE (XX)
+#undef XX
+	};
 
-		(*cursor)++;
-	}
-
-	if (!i)
-		return false;
-
-	str_append_c (output, code);
-	return true;
-}
-
-static bool
-read_octal_escape (const char **cursor, struct str *output)
-{
-	int i;
-	char c, code = 0;
-
-	for (i = 0; i < 3; i++)
-	{
-		c = *(*cursor);
-		if (c < '0' || c > '7')
-			break;
-
-		code = (code << 3) | (c - '0');
-		(*cursor)++;
-	}
-
-	if (!i)
-		return false;
-
-	str_append_c (output, code);
-	return true;
-}
-
-static bool
-read_string_escape_sequence (const char **cursor,
-	struct str *output, struct error **e)
-{
-	int c;
-	switch ((c = *(*cursor)++))
-	{
-	case '?':  str_append_c (output, '?');  break;
-	case '"':  str_append_c (output, '"');  break;
-	case '\\': str_append_c (output, '\\'); break;
-	case 'a':  str_append_c (output, '\a'); break;
-	case 'b':  str_append_c (output, '\b'); break;
-	case 'f':  str_append_c (output, '\f'); break;
-	case 'n':  str_append_c (output, '\n'); break;
-	case 'r':  str_append_c (output, '\r'); break;
-	case 't':  str_append_c (output, '\t'); break;
-	case 'v':  str_append_c (output, '\v'); break;
-
-	case 'e':
-	case 'E':
-		str_append_c (output, '\x1b');
-		break;
-
-	case 'x':
-	case 'X':
-		if (!read_hexa_escape (cursor, output))
-			FAIL ("invalid hexadecimal escape");
-		break;
-
-	case '\0':
-		FAIL ("premature end of escape sequence");
-
-	default:
-		(*cursor)--;
-		if (!read_octal_escape (cursor, output))
-			FAIL ("unknown escape sequence");
-	}
-	return true;
-}
-
-static bool
-unescape_string (const char *s, struct str *output, struct error **e)
-{
-	int c;
-	while ((c = *s++))
-	{
-		if (c != '\\')
-			str_append_c (output, c);
-		else if (!read_string_escape_sequence (&s, output, e))
-			return false;
-	}
-	return true;
+	for (size_t i = 0; i < N_ELEMENTS (table); i++)
+		if (!strcmp (name, table[i]))
+			return i;
+	return -1;
 }
 
 static void
-load_config (struct app_context *ctx)
+on_config_attribute_change (struct config_item *item)
 {
-	// TODO: employ a better configuration file format, so that we don't have
-	//   to do this convoluted post-processing anymore.
-
-	struct str_map map;
-	str_map_init (&map);
-	map.free = free;
-
-	struct error *e = NULL;
-	if (!simple_config_update_from_file (&map, &e))
+	struct app_context *ctx = item->user_data;
+	ssize_t id = attr_by_name (item->schema->name);
+	if (id != -1)
 	{
-		print_error ("error loading configuration: %s", e->message);
-		error_free (e);
-		exit (EXIT_FAILURE);
+		free (ctx->attrs[id]);
+		ctx->attrs[id] = xstrdup (item->type == CONFIG_ITEM_NULL
+			? ctx->attrs_defaults[id]
+			: item->value.string.str);
 	}
-
-	struct str_map_iter iter;
-	str_map_iter_init (&iter, &map);
-	while (str_map_iter_next (&iter))
-	{
-		struct error *e = NULL;
-		struct str value;
-		str_init (&value);
-		if (!unescape_string (iter.link->data, &value, &e))
-		{
-			print_error ("error reading configuration: %s: %s",
-				iter.link->key, e->message);
-			error_free (e);
-			exit (EXIT_FAILURE);
-		}
-
-		str_map_set (&ctx->config, iter.link->key, str_steal (&value));
-	}
-
-	str_map_free (&map);
 }
 
 // --- WebSockets backend ------------------------------------------------------
@@ -995,8 +1013,11 @@ backend_ws_set_up_ssl_ctx (struct app_context *ctx)
 		return true;
 	}
 
-	const char *ca_file = str_map_find (&ctx->config, "ca_file");
-	const char *ca_path = str_map_find (&ctx->config, "ca_path");
+	// TODO: try to resolve filenames relative to configuration directories
+	const char *ca_file = get_config_string
+		(ctx->config.root, "connection.tls_ca_file");
+	const char *ca_path = get_config_string
+		(ctx->config.root, "connection.tls_ca_path");
 	if (ca_file || ca_path)
 	{
 		if (SSL_CTX_load_verify_locations (self->ssl_ctx, ca_file, ca_path))
@@ -1567,8 +1588,11 @@ backend_curl_init (struct app_context *ctx,
 
 	if (!ctx->trust_all)
 	{
-		const char *ca_file = str_map_find (&ctx->config, "ca_file");
-		const char *ca_path = str_map_find (&ctx->config, "ca_path");
+		// TODO: try to resolve filenames relative to configuration directories
+		const char *ca_file = get_config_string
+			(ctx->config.root, "connection.tls_ca_file");
+		const char *ca_path = get_config_string
+			(ctx->config.root, "connection.tls_ca_path");
 		if ((ca_file && curl_easy_setopt (curl, CURLOPT_CAINFO, ca_file))
 		 || (ca_path && curl_easy_setopt (curl, CURLOPT_CAPATH, ca_path)))
 			exit_fatal ("cURL setup failed");
@@ -2040,7 +2064,7 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv,
 		}
 		break;
 	case 'w':
-		call_simple_config_write_default (optarg, g_config_table);
+		save_configuration (ctx->config.root, optarg);
 		exit (EXIT_SUCCESS);
 
 	default:
@@ -2065,15 +2089,16 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv,
 int
 main (int argc, char *argv[])
 {
-	str_map_init (&g_ctx.config);
-	g_ctx.config.free = free;
+	config_init (&g_ctx.config);
+	register_config_modules (&g_ctx);
+	config_load (&g_ctx.config, config_item_object ());
 
 	char *origin = NULL;
 	char *endpoint = NULL;
 	parse_program_arguments (&g_ctx, argc, argv, &origin, &endpoint);
 
 	init_colors (&g_ctx);
-	load_config (&g_ctx);
+	load_configuration (&g_ctx);
 
 	struct http_parser_url url;
 	if (http_parser_parse_url (endpoint, strlen (endpoint), false, &url))
@@ -2145,11 +2170,11 @@ main (int argc, char *argv[])
 	else
 	{
 		// XXX: to be completely correct, we should use tputs, but we cannot
-		const char *prompt_attrs = str_map_find (&g_ctx.config, ATTR_PROMPT);
-		const char *reset_attrs  = str_map_find (&g_ctx.config, ATTR_RESET);
 		g_ctx.readline_prompt = xstrdup_printf ("%c%s%cjson-rpc> %c%s%c",
-			RL_PROMPT_START_IGNORE, prompt_attrs, RL_PROMPT_END_IGNORE,
-			RL_PROMPT_START_IGNORE, reset_attrs,  RL_PROMPT_END_IGNORE);
+			RL_PROMPT_START_IGNORE, g_ctx.attrs[ATTR_PROMPT],
+			RL_PROMPT_END_IGNORE,
+			RL_PROMPT_START_IGNORE, g_ctx.attrs[ATTR_RESET],
+			RL_PROMPT_END_IGNORE);
 	}
 
 	// So that if the remote end closes the connection, attempts to write to
@@ -2204,7 +2229,7 @@ main (int argc, char *argv[])
 	g_ctx.backend->destroy (&g_ctx);
 	free (origin);
 	free (g_ctx.readline_prompt);
-	str_map_free (&g_ctx.config);
+	config_free (&g_ctx.config);
 	free_terminal ();
 	ev_loop_destroy (loop);
 	return EXIT_SUCCESS;
