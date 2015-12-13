@@ -44,9 +44,6 @@
 
 #include <langinfo.h>
 #include <locale.h>
-#include <signal.h>
-#include <strings.h>
-
 #include <arpa/inet.h>
 
 #include <ev.h>
@@ -68,7 +65,7 @@
 
 // --- Configuration (application-specific) ------------------------------------
 
-static struct config_item g_config_table[] =
+static struct simple_config_item g_config_table[] =
 {
 	{ ATTR_PROMPT,     NULL,  "Terminal attributes for the prompt"       },
 	{ ATTR_RESET,      NULL,  "String to reset terminal attributes"      },
@@ -537,7 +534,7 @@ load_config (struct app_context *ctx)
 	map.free = free;
 
 	struct error *e = NULL;
-	if (!read_config_file (&map, &e))
+	if (!simple_config_update_from_file (&map, &e))
 	{
 		print_error ("error loading configuration: %s", e->message);
 		error_free (e);
@@ -2043,7 +2040,7 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv,
 		}
 		break;
 	case 'w':
-		call_write_default_config (optarg, g_config_table);
+		call_simple_config_write_default (optarg, g_config_table);
 		exit (EXIT_SUCCESS);
 
 	default:
