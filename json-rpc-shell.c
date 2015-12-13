@@ -59,6 +59,13 @@
 #include <curses.h>
 #include <term.h>
 
+/// Shorthand to set an error and return failure from the function
+#define FAIL(...)                                                              \
+	BLOCK_START                                                                \
+		error_set (e, __VA_ARGS__);                                            \
+		return false;                                                          \
+	BLOCK_END
+
 // --- Configuration (application-specific) ------------------------------------
 
 static struct config_item g_config_table[] =
@@ -75,6 +82,56 @@ static struct config_item g_config_table[] =
 
 	{ NULL,            NULL,  NULL                                       }
 };
+
+// --- Terminal ----------------------------------------------------------------
+
+static struct
+{
+	bool initialized;                   ///< Terminal is available
+	bool stdout_is_tty;                 ///< `stdout' is a terminal
+	bool stderr_is_tty;                 ///< `stderr' is a terminal
+
+	char *color_set[8];                 ///< Codes to set the foreground colour
+}
+g_terminal;
+
+static bool
+init_terminal (void)
+{
+	int tty_fd = -1;
+	if ((g_terminal.stderr_is_tty = isatty (STDERR_FILENO)))
+		tty_fd = STDERR_FILENO;
+	if ((g_terminal.stdout_is_tty = isatty (STDOUT_FILENO)))
+		tty_fd = STDOUT_FILENO;
+
+	int err;
+	if (tty_fd == -1 || setupterm (NULL, tty_fd, &err) == ERR)
+		return false;
+
+	// Make sure all terminal features used by us are supported
+	if (!set_a_foreground || !enter_bold_mode || !exit_attribute_mode)
+	{
+		del_curterm (cur_term);
+		return false;
+	}
+
+	for (size_t i = 0; i < N_ELEMENTS (g_terminal.color_set); i++)
+		g_terminal.color_set[i] = xstrdup (tparm (set_a_foreground,
+			i, 0, 0, 0, 0, 0, 0, 0, 0));
+
+	return g_terminal.initialized = true;
+}
+
+static void
+free_terminal (void)
+{
+	if (!g_terminal.initialized)
+		return;
+
+	for (size_t i = 0; i < N_ELEMENTS (g_terminal.color_set); i++)
+		free (g_terminal.color_set[i]);
+	del_curterm (cur_term);
+}
 
 // --- Main program ------------------------------------------------------------
 
@@ -107,13 +164,6 @@ struct backend_iface
 	/// Free any resources
 	void (*destroy) (struct app_context *ctx);
 };
-
-/// Shorthand to set an error and return failure from the function
-#define FAIL(...)                                                              \
-	BLOCK_START                                                                \
-		error_set (e, __VA_ARGS__);                                            \
-		return false;                                                          \
-	BLOCK_END
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -233,56 +283,6 @@ static struct app_context
 g_ctx;
 
 // --- Attributed output -------------------------------------------------------
-
-static struct
-{
-	bool initialized;                   ///< Terminal is available
-	bool stdout_is_tty;                 ///< `stdout' is a terminal
-	bool stderr_is_tty;                 ///< `stderr' is a terminal
-
-	char *color_set[8];                 ///< Codes to set the foreground colour
-}
-g_terminal;
-
-static bool
-init_terminal (void)
-{
-	int tty_fd = -1;
-	if ((g_terminal.stderr_is_tty = isatty (STDERR_FILENO)))
-		tty_fd = STDERR_FILENO;
-	if ((g_terminal.stdout_is_tty = isatty (STDOUT_FILENO)))
-		tty_fd = STDOUT_FILENO;
-
-	int err;
-	if (tty_fd == -1 || setupterm (NULL, tty_fd, &err) == ERR)
-		return false;
-
-	// Make sure all terminal features used by us are supported
-	if (!set_a_foreground || !enter_bold_mode || !exit_attribute_mode)
-	{
-		del_curterm (cur_term);
-		return false;
-	}
-
-	for (size_t i = 0; i < N_ELEMENTS (g_terminal.color_set); i++)
-		g_terminal.color_set[i] = xstrdup (tparm (set_a_foreground,
-			i, 0, 0, 0, 0, 0, 0, 0, 0));
-
-	return g_terminal.initialized = true;
-}
-
-static void
-free_terminal (void)
-{
-	if (!g_terminal.initialized)
-		return;
-
-	for (size_t i = 0; i < N_ELEMENTS (g_terminal.color_set); i++)
-		free (g_terminal.color_set[i]);
-	del_curterm (cur_term);
-}
-
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 typedef int (*terminal_printer_fn) (int);
 
