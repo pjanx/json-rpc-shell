@@ -1271,7 +1271,7 @@ backend_ws_on_frame (void *user_data, const struct ws_parser *parser)
 }
 
 static void
-backend_ws_on_connection_timeout (EV_P_ ev_io *handle, int revents)
+backend_ws_on_connection_timeout (EV_P_ ev_timer *handle, int revents)
 {
 	(void) loop;
 	(void) revents;
