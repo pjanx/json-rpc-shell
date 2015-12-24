@@ -1,6 +1,10 @@
 project (json-rpc-shell C)
 cmake_minimum_required (VERSION 2.8.5)
 
+# Options
+option (WANT_READLINE "Use GNU Readline for the UI (better)" ON)
+option (WANT_LIBEDIT "Use BSD libedit for the UI" OFF)
+
 # Moar warnings
 if ("${CMAKE_C_COMPILER_ID}" MATCHES "GNU" OR CMAKE_COMPILER_IS_GNUC)
 	# -Wunused-function is pretty annoying here, as everything is static
@@ -28,7 +32,7 @@ find_package (LibEV REQUIRED)
 pkg_check_modules (ncursesw ncursesw)
 
 set (project_libraries ${dependencies_LIBRARIES}
-	${libssl_LIBRARIES} ${LIBEV_LIBRARIES} readline)
+	${libssl_LIBRARIES} ${LIBEV_LIBRARIES})
 include_directories (${dependencies_INCLUDE_DIRS}
 	${libssl_INCLUDE_DIRS} ${LIBEV_INCLUDE_DIRS})
 
@@ -42,7 +46,20 @@ else (CURSES_FOUND)
 	message (SEND_ERROR "Curses not found")
 endif (ncursesw_FOUND)
 
+if ((WANT_READLINE AND WANT_LIBEDIT) OR (NOT WANT_READLINE AND NOT WANT_LIBEDIT))
+	message (SEND_ERROR "You have to choose either GNU Readline or libedit")
+elseif (WANT_READLINE)
+	list (APPEND project_libraries readline)
+elseif (WANT_LIBEDIT)
+	pkg_check_modules (libedit REQUIRED libedit)
+	list (APPEND project_libraries ${libedit_LIBRARIES})
+	include_directories (${libedit_INCLUDE_DIRS})
+endif ((WANT_READLINE AND WANT_LIBEDIT) OR (NOT WANT_READLINE AND NOT WANT_LIBEDIT))
+
 # Generate a configuration file
+set (HAVE_READLINE "${WANT_READLINE}")
+set (HAVE_EDITLINE "${WANT_LIBEDIT}")
+
 configure_file (${PROJECT_SOURCE_DIR}/config.h.in ${PROJECT_BINARY_DIR}/config.h)
 include_directories (${PROJECT_BINARY_DIR})
 

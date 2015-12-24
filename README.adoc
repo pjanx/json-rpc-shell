@@ -29,7 +29,8 @@ Building and Running
 --------------------
 Build dependencies: CMake, pkg-config, help2man,
                     liberty (included), http-parser (included) +
-Runtime dependencies: libev, Jansson, cURL, readline, openssl
+Runtime dependencies: libev, Jansson, cURL, openssl,
+                      readline or libedit >= 2013-07-12,
 
  $ git clone --recursive https://github.com/pjanouch/json-rpc-shell.git
  $ mkdir json-rpc-shell/build

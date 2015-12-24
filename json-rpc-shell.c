@@ -56,8 +56,6 @@ enum
 #include <arpa/inet.h>
 
 #include <ev.h>
-#include <readline/readline.h>
-#include <readline/history.h>
 #include <curl/curl.h>
 #include <jansson.h>
 #include <openssl/rand.h>
@@ -80,6 +78,7 @@ static struct
 	bool stdout_is_tty;                 ///< `stdout' is a terminal
 	bool stderr_is_tty;                 ///< `stderr' is a terminal
 
+	struct termios termios;             ///< Terminal attributes
 	char *color_set[8];                 ///< Codes to set the foreground colour
 }
 g_terminal;
@@ -95,6 +94,9 @@ init_terminal (void)
 
 	int err;
 	if (tty_fd == -1 || setupterm (NULL, tty_fd, &err) == ERR)
+		return false;
+
+	if (tcgetattr (tty_fd, &g_terminal.termios))
 		return false;
 
 	// Make sure all terminal features used by us are supported
@@ -121,6 +123,672 @@ free_terminal (void)
 		free (g_terminal.color_set[i]);
 	del_curterm (cur_term);
 }
+
+// --- User interface ----------------------------------------------------------
+
+// Not trying to do anything crazy here like switchable buffers.
+// Not trying to be too universal here either, it's not going to be reusable.
+
+struct input
+{
+	struct input_vtable *vtable;        ///< Virtual methods
+	void *user_data;                    ///< User data for callbacks
+
+	/// Process a single line input by the user
+	void (*on_input) (char *line, void *user_data);
+};
+
+struct input_vtable
+{
+	/// Start the interface under the given program name
+	void (*start) (struct input *input, const char *program_name);
+	/// Stop the interface
+	void (*stop) (struct input *input);
+	/// Destroy the object
+	void (*destroy) (struct input *input);
+
+	/// Hide the prompt if shown
+	void (*hide) (struct input *input);
+	/// Show the prompt if hidden
+	void (*show) (struct input *input);
+	/// Change the prompt string; takes ownership
+	void (*set_prompt) (struct input *input, char *prompt);
+	/// Ring the terminal bell
+	void (*ding) (struct input *input);
+
+	/// Load history from file
+	bool (*load_history) (struct input *input, const char *filename,
+		struct error **e);
+	/// Save history to file
+	bool (*save_history) (struct input *input, const char *filename,
+		struct error **e);
+
+	/// Handle terminal resize
+	void (*on_terminal_resized) (struct input *input);
+	/// Handle terminal input
+	void (*on_tty_readable) (struct input *input);
+};
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+#ifdef HAVE_READLINE
+
+#include <readline/readline.h>
+#include <readline/history.h>
+
+#define INPUT_START_IGNORE  RL_PROMPT_START_IGNORE
+#define INPUT_END_IGNORE    RL_PROMPT_END_IGNORE
+
+struct input_rl
+{
+	struct input super;                 ///< Parent class
+
+	bool active;                        ///< Interface has been started
+	char *prompt;                       ///< The prompt we use
+	int prompt_shown;                   ///< Whether the prompt is shown now
+
+	char *saved_line;                   ///< Saved line content
+	int saved_point;                    ///< Saved cursor position
+	int saved_mark;                     ///< Saved mark
+};
+
+/// Unfortunately Readline cannot pass us any pointer value in its callbacks
+/// that would eliminate the need to use global variables ourselves
+static struct input_rl *g_input_rl;
+
+static void
+input_rl_erase (void)
+{
+	rl_set_prompt ("");
+	rl_replace_line ("", false);
+	rl_redisplay ();
+}
+
+static void
+input_rl_on_input (char *line)
+{
+	struct input_rl *self = g_input_rl;
+
+	// The prompt should always be visible at the moment we process input keys;
+	// confirming it de facto hides it because we move onto a new line
+	if (line)
+		self->prompt_shown = 0;
+	if (line && *line)
+		add_history (line);
+
+	self->super.on_input (line, self->super.user_data);
+	free (line);
+
+	// Readline automatically redisplays the prompt after we're done here;
+	// we could have actually hidden it by now in preparation of a quit though
+	if (line)
+		self->prompt_shown++;
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+static void
+input_rl_start (struct input *input, const char *program_name)
+{
+	struct input_rl *self = (struct input_rl *) input;
+	using_history ();
+	// This can cause memory leaks, or maybe even a segfault.  Funny, eh?
+	stifle_history (HISTORY_LIMIT);
+
+	const char *slash = strrchr (program_name, '/');
+	rl_readline_name = slash ? ++slash : program_name;
+	rl_catch_sigwinch = false;
+
+	hard_assert (self->prompt != NULL);
+	rl_callback_handler_install (self->prompt, input_rl_on_input);
+
+	self->active = true;
+	self->prompt_shown = 1;
+	g_input_rl = self;
+}
+
+static void
+input_rl_stop (struct input *input)
+{
+	struct input_rl *self = (struct input_rl *) input;
+	if (self->prompt_shown > 0)
+		input_rl_erase ();
+
+	// This is okay so long as we're not called from within readline
+	rl_callback_handler_remove ();
+
+	self->active = false;
+	self->prompt_shown = 0;
+	g_input_rl = NULL;
+}
+
+static void
+input_rl_destroy (struct input *input)
+{
+	struct input_rl *self = (struct input_rl *) input;
+
+	if (self->active)
+		input_rl_stop (input);
+
+	free (self->saved_line);
+	free (self->prompt);
+	free (self);
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+static void
+input_rl_hide (struct input *input)
+{
+	struct input_rl *self = (struct input_rl *) input;
+	if (!self->active || self->prompt_shown-- < 1)
+		return;
+
+	hard_assert (!self->saved_line);
+
+	self->saved_point = rl_point;
+	self->saved_mark = rl_mark;
+	self->saved_line = rl_copy_text (0, rl_end);
+
+	input_rl_erase ();
+}
+
+static void
+input_rl_show (struct input *input)
+{
+	struct input_rl *self = (struct input_rl *) input;
+	if (!self->active || ++self->prompt_shown < 1)
+		return;
+
+	hard_assert (self->saved_line);
+
+	rl_set_prompt (self->prompt);
+	rl_replace_line (self->saved_line, false);
+	rl_point = self->saved_point;
+	rl_mark = self->saved_mark;
+	free (self->saved_line);
+	self->saved_line = NULL;
+
+	rl_redisplay ();
+}
+
+static void
+input_rl_set_prompt (struct input *input, char *prompt)
+{
+	struct input_rl *self = (struct input_rl *) input;
+	free (self->prompt);
+	self->prompt = prompt;
+
+	if (!self->active)
+		return;
+
+	// First reset the prompt to work around a bug in readline
+	rl_set_prompt ("");
+	if (self->prompt_shown > 0)
+		rl_redisplay ();
+
+	rl_set_prompt (self->prompt);
+	if (self->prompt_shown > 0)
+		rl_redisplay ();
+}
+
+static void
+input_rl_ding (struct input *input)
+{
+	(void) input;
+	rl_ding ();
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+static bool
+input_rl_load_history (struct input *input, const char *filename,
+	struct error **e)
+{
+	(void) input;
+
+	if (!(errno = read_history (filename)))
+		return true;
+
+	error_set (e, "%s", strerror (errno));
+	return false;
+}
+
+static bool
+input_rl_save_history (struct input *input, const char *filename,
+	struct error **e)
+{
+	(void) input;
+
+	if (!(errno = write_history (filename)))
+		return true;
+
+	error_set (e, "%s", strerror (errno));
+	return false;
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+static void
+input_rl_on_terminal_resized (struct input *input)
+{
+	// This fucks up big time on terminals with automatic wrapping such as
+	// rxvt-unicode or newer VTE when the current line overflows, however we
+	// can't do much about that
+	(void) input;
+	rl_resize_terminal ();
+}
+
+static void
+input_rl_on_tty_readable (struct input *input)
+{
+	(void) input;
+	rl_callback_read_char ();
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+static struct input_vtable input_rl_vtable =
+{
+	.start               = input_rl_start,
+	.stop                = input_rl_stop,
+	.destroy             = input_rl_destroy,
+
+	.hide                = input_rl_hide,
+	.show                = input_rl_show,
+	.set_prompt          = input_rl_set_prompt,
+	.ding                = input_rl_ding,
+
+	.load_history        = input_rl_load_history,
+	.save_history        = input_rl_save_history,
+
+	.on_terminal_resized = input_rl_on_terminal_resized,
+	.on_tty_readable     = input_rl_on_tty_readable,
+};
+
+static struct input *
+input_rl_new (void)
+{
+	struct input_rl *self = xcalloc (1, sizeof *self);
+	self->super.vtable = &input_rl_vtable;
+	return &self->super;
+}
+
+#define input_new input_rl_new
+#endif // HAVE_READLINE
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+#ifdef HAVE_EDITLINE
+
+#include <histedit.h>
+
+#define INPUT_START_IGNORE  '\x01'
+#define INPUT_END_IGNORE    '\x01'
+
+struct input_el
+{
+	struct input super;                 ///< Parent class
+
+	EditLine *editline;                 ///< The EditLine object
+	HistoryW *history;                  ///< The history object
+	char *entered_line;                 ///< Buffers the entered line
+
+	bool active;                        ///< Interface has been started
+	char *prompt;                       ///< The prompt we use
+	int prompt_shown;                   ///< Whether the prompt is shown now
+
+	wchar_t *saved_line;                ///< Saved line content
+	int saved_point;                    ///< Saved cursor position
+	int saved_len;                      ///< Saved line length
+};
+
+static char *
+input_el_wcstombs (const wchar_t *s)
+{
+	size_t len = wcstombs (NULL, s, 0);
+	if (len++ == (size_t) -1)
+		return NULL;
+
+	char *mb = xmalloc (len);
+	mb[wcstombs (mb, s, len)] = 0;
+	return mb;
+}
+
+static int
+input_el_get_termios (int character, int fallback)
+{
+	if (!g_terminal.initialized)
+		return fallback;
+
+	cc_t value = g_terminal.termios.c_cc[character];
+	if (value == _POSIX_VDISABLE)
+		return fallback;
+	return value;
+}
+
+static void
+input_el_redisplay (struct input_el *self)
+{
+	char x[] = { input_el_get_termios (VREPRINT, 'R' - 0x40), 0 };
+	el_push (self->editline, x);
+
+	// We have to do this or it gets stuck and nothing is done
+	(void) el_gets (self->editline, NULL);
+}
+
+static char *
+input_el_make_prompt (EditLine *editline)
+{
+	struct input_el *self;
+	el_get (editline, EL_CLIENTDATA, &self);
+	return self->prompt ? self->prompt : "";
+}
+
+static char *
+input_el_make_empty_prompt (EditLine *editline)
+{
+	(void) editline;
+	return "";
+}
+
+static void
+input_el_erase (struct input_el *self)
+{
+	const LineInfoW *info = el_wline (self->editline);
+	int len = info->lastchar - info->buffer;
+	int point = info->cursor - info->buffer;
+	el_cursor (self->editline, len - point);
+	el_wdeletestr (self->editline, len);
+
+	el_set (self->editline, EL_PROMPT, input_el_make_empty_prompt);
+	input_el_redisplay (self);
+}
+
+static unsigned char
+input_el_on_return (EditLine *editline, int key)
+{
+	(void) key;
+
+	struct input_el *self;
+	el_get (editline, EL_CLIENTDATA, &self);
+
+	const LineInfoW *info = el_wline (editline);
+	int len = info->lastchar - info->buffer;
+	int point = info->cursor - info->buffer;
+
+	wchar_t *line = calloc (sizeof *info->buffer, len + 1);
+	memcpy (line, info->buffer, sizeof *info->buffer * len);
+
+	if (*line)
+	{
+		HistEventW ev;
+		history_w (self->history, &ev, H_ENTER, line);
+	}
+	free (line);
+
+	// Convert to a multibyte string and store it for later
+	const LineInfo *info_mb = el_line (editline);
+	self->entered_line = xstrndup
+		(info_mb->buffer, info_mb->lastchar - info_mb->buffer);
+
+	// Now we need to force editline to actually print the newline
+	el_cursor (editline, len++ - point);
+	el_insertstr (editline, "\n");
+	input_el_redisplay (self);
+
+	// Finally we need to discard the old line's contents
+	el_wdeletestr (editline, len);
+	return CC_NEWLINE;
+}
+
+static void
+input_el_install_prompt (struct input_el *self)
+{
+	// XXX: the ignore doesn't quite work, see https://gnats.netbsd.org/47539
+	el_set (self->editline, EL_PROMPT_ESC,
+		input_el_make_prompt, INPUT_START_IGNORE);
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+static void
+input_el_start (struct input *input, const char *program_name)
+{
+	struct input_el *self = (struct input_el *) input;
+	self->editline = el_init (program_name, stdin, stdout, stderr);
+	el_set (self->editline, EL_CLIENTDATA, self);
+	input_el_install_prompt (self);
+	el_set (self->editline, EL_SIGNAL, false);
+	el_set (self->editline, EL_UNBUFFERED, true);
+	el_set (self->editline, EL_EDITOR, "emacs");
+	el_wset (self->editline, EL_HIST, history_w, self->history);
+
+	// No, editline, it's not supposed to kill the entire line
+	el_set (self->editline, EL_BIND, "^w", "ed-delete-prev-word", NULL);
+	// Just what are you doing?
+	el_set (self->editline, EL_BIND, "^u", "vi-kill-line-prev",   NULL);
+
+	// It's probably better to handle this ourselves
+	el_set (self->editline, EL_ADDFN,
+		"send-line", "Send line", input_el_on_return);
+	el_set (self->editline, EL_BIND, "\n", "send-line",           NULL);
+
+	// Source the user's defaults file
+	el_source (self->editline, NULL);
+
+	self->active = true;
+	self->prompt_shown = 1;
+}
+
+static void
+input_el_stop (struct input *input)
+{
+	struct input_el *self = (struct input_el *) input;
+	if (self->prompt_shown > 0)
+		input_el_erase (self);
+
+	el_end (self->editline);
+	self->editline = NULL;
+
+	self->active = false;
+	self->prompt_shown = 0;
+}
+
+static void
+input_el_destroy (struct input *input)
+{
+	struct input_el *self = (struct input_el *) input;
+
+	if (self->active)
+		input_el_stop (input);
+
+	history_wend (self->history);
+
+	free (self->saved_line);
+	free (self->prompt);
+	free (self);
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+static void
+input_el_hide (struct input *input)
+{
+	struct input_el *self = (struct input_el *) input;
+	if (!self->active || self->prompt_shown-- < 1)
+		return;
+
+	hard_assert (!self->saved_line);
+
+	const LineInfoW *info = el_wline (self->editline);
+	int len = info->lastchar - info->buffer;
+	int point = info->cursor - info->buffer;
+
+	wchar_t *line = calloc (sizeof *info->buffer, len + 1);
+	memcpy (line, info->buffer, sizeof *info->buffer * len);
+	el_cursor (self->editline, len - point);
+	el_wdeletestr (self->editline, len);
+
+	self->saved_line = line;
+	self->saved_point = point;
+	self->saved_len = len;
+
+	input_el_erase (self);
+}
+
+static void
+input_el_show (struct input *input)
+{
+	struct input_el *self = (struct input_el *) input;
+	if (!self->active || ++self->prompt_shown < 1)
+		return;
+
+	hard_assert (self->saved_line);
+
+	el_winsertstr (self->editline, self->saved_line);
+	el_cursor (self->editline,
+		-(self->saved_len - self->saved_point));
+	free (self->saved_line);
+	self->saved_line = NULL;
+
+	input_el_install_prompt (self);
+	input_el_redisplay (self);
+}
+
+static void
+input_el_set_prompt (struct input *input, char *prompt)
+{
+	struct input_el *self = (struct input_el *) input;
+	free (self->prompt);
+	self->prompt = prompt;
+
+	if (self->prompt_shown > 0)
+		input_el_redisplay (self);
+}
+
+static void
+input_el_ding (struct input *input)
+{
+	(void) input;
+
+	const char *ding = bell ? bell : "\a";
+	write (STDOUT_FILENO, ding, strlen (ding));
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+static bool
+input_el_load_history (struct input *input, const char *filename,
+	struct error **e)
+{
+	struct input_el *self = (struct input_el *) input;
+
+	HistEventW ev;
+	if (history_w (self->history, &ev, H_LOAD, filename) != -1)
+		return true;
+
+	char *error = input_el_wcstombs (ev.str);
+	error_set (e, "%s", error);
+	free (error);
+	return false;
+}
+
+static bool
+input_el_save_history (struct input *input, const char *filename,
+	struct error **e)
+{
+	struct input_el *self = (struct input_el *) input;
+
+	HistEventW ev;
+	if (history_w (self->history, &ev, H_SAVE, filename) != -1)
+		return true;
+
+	char *error = input_el_wcstombs (ev.str);
+	error_set (e, "%s", error);
+	free (error);
+	return false;
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+static void
+input_el_on_terminal_resized (struct input *input)
+{
+	struct input_el *self = (struct input_el *) input;
+	el_resize (self->editline);
+}
+
+static void
+input_el_on_tty_readable (struct input *input)
+{
+	// We bind the return key to process it how we need to
+	struct input_el *self = (struct input_el *) input;
+
+	// el_gets() with EL_UNBUFFERED doesn't work with UTF-8,
+	// we must use the wide-character interface
+	int count = 0;
+	const wchar_t *buf = el_wgets (self->editline, &count);
+
+	// Process data from our newline handler (async-friendly handling)
+	if (self->entered_line)
+	{
+		// We can't have anything try to hide the old prompt with the appended
+		// newline, it needs to stay where it is and as it is
+		self->prompt_shown = 0;
+
+		self->super.on_input (self->entered_line, self->super.user_data);
+		free (self->entered_line);
+		self->entered_line = NULL;
+
+		// Forbid editline from trying to erase the old prompt (or worse)
+		// and let it redisplay the prompt in its clean state
+		el_set (self->editline, EL_REFRESH);
+		self->prompt_shown = 1;
+	}
+
+	if (count == 1 && buf[0] == ('D' - 0x40) /* hardcoded VEOF in editline */)
+	{
+		el_deletestr (self->editline, 1);
+		input_el_redisplay (self);
+		self->super.on_input (NULL, self->super.user_data);
+	}
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+static struct input_vtable input_el_vtable =
+{
+	.start               = input_el_start,
+	.stop                = input_el_stop,
+	.destroy             = input_el_destroy,
+
+	.hide                = input_el_hide,
+	.show                = input_el_show,
+	.set_prompt          = input_el_set_prompt,
+	.ding                = input_el_ding,
+
+	.load_history        = input_el_load_history,
+	.save_history        = input_el_save_history,
+
+	.on_terminal_resized = input_el_on_terminal_resized,
+	.on_tty_readable     = input_el_on_tty_readable,
+};
+
+static struct input *
+input_el_new (void)
+{
+	struct input_el *self = xcalloc (1, sizeof *self);
+	self->super.vtable = &input_el_vtable;
+
+	HistEventW ev;
+	self->history = history_winit ();
+	history_w (self->history, &ev, H_SETSIZE, HISTORY_LIMIT);
+	return &self->super;
+}
+
+#define input_new input_el_new
+#endif // HAVE_EDITLINE
 
 // --- Main program ------------------------------------------------------------
 
@@ -251,13 +919,14 @@ enum color_mode
 
 static struct app_context
 {
+	struct input *input;                ///< Input interface
+	char *attrs_defaults[ATTR_COUNT];   ///< Default terminal attributes
+	char *attrs[ATTR_COUNT];            ///< Terminal attributes
+
 	struct backend_iface *backend;      ///< Our current backend
 
 	struct ws_context ws;               ///< WebSockets backend data
 	struct curl_context curl;           ///< cURL backend data
-
-	char *attrs_defaults[ATTR_COUNT];   ///< Default terminal attributes
-	char *attrs[ATTR_COUNT];            ///< Terminal attributes
 
 	struct config config;               ///< Program configuration
 	enum color_mode color_mode;         ///< Colour output mode
@@ -270,9 +939,6 @@ static struct app_context
 
 	iconv_t term_to_utf8;               ///< Terminal encoding to UTF-8
 	iconv_t term_from_utf8;             ///< UTF-8 to terminal encoding
-
-	char *readline_prompt;              ///< The prompt we use for readline
-	bool readline_prompt_shown;         ///< Whether the prompt is shown now
 }
 g_ctx;
 
@@ -468,34 +1134,13 @@ log_message_attributed (void *user_data, const char *quote, const char *fmt,
 	va_list ap)
 {
 	FILE *stream = stderr;
-
-	// GNU readline is a huge piece of total crap; it seems that we must do
-	// these incredible shenanigans in order to intersperse readline output
-	// with asynchronous status messages
-	char *saved_line;
-	int saved_point;
-
-	if (g_ctx.readline_prompt_shown)
-	{
-		saved_point = rl_point;
-		saved_line = rl_copy_text (0, rl_end);
-		rl_set_prompt ("");
-		rl_replace_line ("", 0);
-		rl_redisplay ();
-	}
+	g_ctx.input->vtable->hide (g_ctx.input);
 
 	print_attributed (&g_ctx, stream, (intptr_t) user_data, "%s", quote);
 	vprint_attributed (&g_ctx, stream, (intptr_t) user_data, fmt, ap);
 	fputs ("\n", stream);
 
-	if (g_ctx.readline_prompt_shown)
-	{
-		rl_set_prompt (g_ctx.readline_prompt);
-		rl_replace_line (saved_line, 0);
-		rl_point = saved_point;
-		rl_redisplay ();
-		free (saved_line);
-	}
+	g_ctx.input->vtable->show (g_ctx.input);
 }
 
 static void
@@ -1659,6 +2304,18 @@ static struct backend_iface g_backend_curl =
 
 // --- Main program ------------------------------------------------------------
 
+static void
+quit (struct app_context *ctx)
+{
+	if (ctx->backend->on_quit)
+		ctx->backend->on_quit (ctx);
+
+	ev_break (EV_DEFAULT_ EVBREAK_ALL);
+	ctx->input->vtable->hide (ctx->input);
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
 #define PARSE_FAIL(...)                                                        \
 	BLOCK_START                                                                \
 		print_error (__VA_ARGS__);                                             \
@@ -1842,8 +2499,15 @@ fail:
 }
 
 static void
-process_input (struct app_context *ctx, char *user_input)
+process_input (char *user_input, void *user_data)
 {
+	struct app_context *ctx = user_data;
+	if (!user_input)
+	{
+		quit (ctx);
+		return;
+	}
+
 	char *input;
 	size_t len;
 
@@ -1940,68 +2604,28 @@ on_winch (EV_P_ ev_signal *handle, int revents)
 	(void) handle;
 	(void) revents;
 
-	// This fucks up big time on terminals with automatic wrapping such as
-	// rxvt-unicode or newer VTE when the current line overflows, however we
-	// can't do much about that
-	rl_resize_terminal ();
-}
-
-static void
-quit (struct app_context *ctx)
-{
-	if (ctx->backend->on_quit)
-		ctx->backend->on_quit (ctx);
-
-	ev_break (EV_DEFAULT_ EVBREAK_ALL);
+	struct app_context *ctx = ev_userdata (loop);
+	ctx->input->vtable->on_terminal_resized (ctx->input);
 }
 
 static void
 on_terminated (EV_P_ ev_signal *handle, int revents)
 {
-	(void) loop;
 	(void) handle;
 	(void) revents;
 
-	quit (&g_ctx);
-}
-
-static void
-on_readline_input (char *line)
-{
-	// Otherwise the prompt is shown at all times
-	// Stupid readline forces us to use a global variable
-	g_ctx.readline_prompt_shown = false;
-
-	if (!line)
-	{
-		quit (&g_ctx);
-
-		// We must do this here, or the prompt gets printed twice.  *shrug*
-		rl_callback_handler_remove ();
-
-		// Note that we don't set "readline_prompt_shown" back to true.
-		// This is so that we can safely do rl_callback_handler_remove when
-		// the program is terminated in an unusual manner (other than ^D).
-		return;
-	}
-
-	if (*line)
-		add_history (line);
-
-	process_input (&g_ctx, line);
-	free (line);
-
-	g_ctx.readline_prompt_shown = true;
+	struct app_context *ctx = ev_userdata (loop);
+	quit (ctx);
 }
 
 static void
 on_tty_readable (EV_P_ ev_io *handle, int revents)
 {
-	(void) loop;
 	(void) handle;
 
+	struct app_context *ctx = ev_userdata (loop);
 	if (revents & EV_READ)
-		rl_callback_read_char ();
+		ctx->input->vtable->on_tty_readable (ctx->input);
 }
 
 static void
@@ -2158,23 +2782,26 @@ main (int argc, char *argv[])
 		data_home = xstrdup_printf ("%s/.local/share", home);
 	}
 
-	using_history ();
-	stifle_history (HISTORY_LIMIT);
+	g_ctx.input = input_new ();
+	g_ctx.input->user_data = &g_ctx;
+	g_ctx.input->on_input = process_input;
 
 	char *history_path =
 		xstrdup_printf ("%s/" PROGRAM_NAME "/history", data_home);
-	(void) read_history (history_path);
+	(void) g_ctx.input->vtable->load_history (g_ctx.input, history_path, NULL);
 
 	if (!get_attribute_printer (stdout))
-		g_ctx.readline_prompt = xstrdup_printf ("json-rpc> ");
+		g_ctx.input->vtable->set_prompt (g_ctx.input,
+			xstrdup_printf ("json-rpc> "));
 	else
 	{
 		// XXX: to be completely correct, we should use tputs, but we cannot
-		g_ctx.readline_prompt = xstrdup_printf ("%c%s%cjson-rpc> %c%s%c",
-			RL_PROMPT_START_IGNORE, g_ctx.attrs[ATTR_PROMPT],
-			RL_PROMPT_END_IGNORE,
-			RL_PROMPT_START_IGNORE, g_ctx.attrs[ATTR_RESET],
-			RL_PROMPT_END_IGNORE);
+		g_ctx.input->vtable->set_prompt (g_ctx.input,
+			xstrdup_printf ("%c%s%cjson-rpc> %c%s%c",
+				INPUT_START_IGNORE, g_ctx.attrs[ATTR_PROMPT],
+				INPUT_END_IGNORE,
+				INPUT_START_IGNORE, g_ctx.attrs[ATTR_RESET],
+				INPUT_END_IGNORE));
 	}
 
 	// So that if the remote end closes the connection, attempts to write to
@@ -2202,35 +2829,33 @@ main (int argc, char *argv[])
 	ev_io_init (&tty_watcher, on_tty_readable, STDIN_FILENO, EV_READ);
 	ev_io_start (EV_DEFAULT_ &tty_watcher);
 
-	// readline 6.3 doesn't immediately redraw the terminal upon reception
-	// of SIGWINCH, so we must run it in an event loop to remediate that
-	rl_catch_sigwinch = false;
-	g_ctx.readline_prompt_shown = true;
-	rl_callback_handler_install (g_ctx.readline_prompt, on_readline_input);
+	g_ctx.input->vtable->start (g_ctx.input, PROGRAM_NAME);
 
+	ev_set_userdata (loop, &g_ctx);
 	ev_run (loop, 0);
 
-	if (g_ctx.readline_prompt_shown)
-		rl_callback_handler_remove ();
-	putchar ('\n');
-
 	// User has terminated the program, let's save the history and clean up
+	struct error *e = NULL;
 	char *dir = xstrdup (history_path);
-	(void) mkdir_with_parents (dirname (dir), NULL);
-	free (dir);
 
-	if (write_history (history_path))
+	if (!mkdir_with_parents (dirname (dir), &e)
+	 || !g_ctx.input->vtable->save_history (g_ctx.input, history_path, &e))
+	{
 		print_error ("writing the history file `%s' failed: %s",
-			history_path, strerror (errno));
+			history_path, e->message);
+		error_free (e);
+	}
 
+	free (dir);
 	free (history_path);
+
 	iconv_close (g_ctx.term_from_utf8);
 	iconv_close (g_ctx.term_to_utf8);
 	g_ctx.backend->destroy (&g_ctx);
 	free (origin);
-	free (g_ctx.readline_prompt);
 	config_free (&g_ctx.config);
 	free_terminal ();
+	g_ctx.input->vtable->destroy (g_ctx.input);
 	ev_loop_destroy (loop);
 	return EXIT_SUCCESS;
 }

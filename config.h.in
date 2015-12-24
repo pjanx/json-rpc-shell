@@ -4,5 +4,8 @@
 #define PROGRAM_NAME "${PROJECT_NAME}"
 #define PROGRAM_VERSION "${project_VERSION}"
 
+#cmakedefine HAVE_READLINE
+#cmakedefine HAVE_EDITLINE
+
 #endif  // ! CONFIG_H
 
