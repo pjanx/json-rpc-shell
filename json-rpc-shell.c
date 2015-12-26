@@ -136,6 +136,8 @@ struct input
 
 	/// Process a single line input by the user
 	void (*on_input) (char *line, void *user_data);
+	/// User requested external line editing
+	void (*on_run_editor) (const char *line, void *user_data);
 };
 
 struct input_vtable
@@ -144,6 +146,8 @@ struct input_vtable
 	void (*start) (struct input *input, const char *program_name);
 	/// Stop the interface
 	void (*stop) (struct input *input);
+	/// Prepare or unprepare terminal for our needs
+	void (*prepare) (struct input *input, bool enabled);
 	/// Destroy the object
 	void (*destroy) (struct input *input);
 
@@ -153,6 +157,8 @@ struct input_vtable
 	void (*show) (struct input *input);
 	/// Change the prompt string; takes ownership
 	void (*set_prompt) (struct input *input, char *prompt);
+	/// Change the current line input
+	bool (*replace_line) (struct input *input, const char *line);
 	/// Ring the terminal bell
 	void (*ding) (struct input *input);
 
@@ -225,6 +231,26 @@ input_rl_on_input (char *line)
 		self->prompt_shown++;
 }
 
+static int
+input_rl_on_run_editor (int count, int key)
+{
+	(void) count;
+	(void) key;
+
+	struct input_rl *self = g_input_rl;
+	if (self->super.on_run_editor)
+		self->super.on_run_editor (rl_line_buffer, self->super.user_data);
+	return 0;
+}
+
+static int
+input_rl_on_startup (void)
+{
+	rl_add_defun ("run-editor", input_rl_on_run_editor, -1);
+	rl_bind_keyseq ("\\ee", rl_named_function ("run-editor"));
+	return 0;
+}
+
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 static void
@@ -237,6 +263,7 @@ input_rl_start (struct input *input, const char *program_name)
 
 	const char *slash = strrchr (program_name, '/');
 	rl_readline_name = slash ? ++slash : program_name;
+	rl_startup_hook = input_rl_on_startup;
 	rl_catch_sigwinch = false;
 
 	hard_assert (self->prompt != NULL);
@@ -260,6 +287,17 @@ input_rl_stop (struct input *input)
 	self->active = false;
 	self->prompt_shown = 0;
 	g_input_rl = NULL;
+}
+
+static void
+input_rl_prepare (struct input *input, bool enabled)
+{
+	(void) input;
+
+	if (enabled)
+		rl_prep_terminal (true);
+	else
+		rl_deprep_terminal ();
 }
 
 static void
@@ -332,6 +370,20 @@ input_rl_set_prompt (struct input *input, char *prompt)
 		rl_redisplay ();
 }
 
+static bool
+input_rl_replace_line (struct input *input, const char *line)
+{
+	struct input_rl *self = (struct input_rl *) input;
+	if (!self->active || self->prompt_shown < 1)
+		return false;
+
+	rl_point = rl_mark = 0;
+	rl_replace_line (line, false);
+	rl_point = strlen (line);
+	rl_redisplay ();
+	return true;
+}
+
 static void
 input_rl_ding (struct input *input)
 {
@@ -392,11 +444,13 @@ static struct input_vtable input_rl_vtable =
 {
 	.start               = input_rl_start,
 	.stop                = input_rl_stop,
+	.prepare             = input_rl_prepare,
 	.destroy             = input_rl_destroy,
 
 	.hide                = input_rl_hide,
 	.show                = input_rl_show,
 	.set_prompt          = input_rl_set_prompt,
+	.replace_line        = input_rl_replace_line,
 	.ding                = input_rl_ding,
 
 	.load_history        = input_rl_load_history,
@@ -542,6 +596,22 @@ input_el_on_return (EditLine *editline, int key)
 	return CC_NEWLINE;
 }
 
+static unsigned char
+input_el_on_run_editor (EditLine *editline, int key)
+{
+	(void) key;
+
+	struct input_el *self;
+	el_get (editline, EL_CLIENTDATA, &self);
+
+	const LineInfo *info = el_line (editline);
+	char *line = xstrndup (info->buffer, info->lastchar - info->buffer);
+	if (self->super.on_run_editor)
+		self->super.on_run_editor (line, self->super.user_data);
+	free (line);
+	return CC_NORM;
+}
+
 static void
 input_el_install_prompt (struct input_el *self)
 {
@@ -574,6 +644,11 @@ input_el_start (struct input *input, const char *program_name)
 		"send-line", "Send line", input_el_on_return);
 	el_set (self->editline, EL_BIND, "\n", "send-line",           NULL);
 
+	// It's probably better to handle this ourselves
+	el_set (self->editline, EL_ADDFN,
+		"run-editor", "Run editor to edit line", input_el_on_run_editor);
+	el_set (self->editline, EL_BIND, "M-e", "run-editor",         NULL);
+
 	// Source the user's defaults file
 	el_source (self->editline, NULL);
 
@@ -593,6 +668,13 @@ input_el_stop (struct input *input)
 
 	self->active = false;
 	self->prompt_shown = 0;
+}
+
+static void
+input_el_prepare (struct input *input, bool enabled)
+{
+	struct input_el *self = (struct input_el *) input;
+	el_set (self->editline, EL_PREP_TERM, enabled);
 }
 
 static void
@@ -665,6 +747,24 @@ input_el_set_prompt (struct input *input, char *prompt)
 
 	if (self->prompt_shown > 0)
 		input_el_redisplay (self);
+}
+
+static bool
+input_el_replace_line (struct input *input, const char *line)
+{
+	struct input_el *self = (struct input_el *) input;
+	if (!self->active || self->prompt_shown < 1)
+		return false;
+
+	const LineInfoW *info = el_wline (self->editline);
+	int len = info->lastchar - info->buffer;
+	int point = info->cursor - info->buffer;
+	el_cursor (self->editline, len - point);
+	el_wdeletestr (self->editline, len);
+
+	bool success = !*line || !el_insertstr (self->editline, line);
+	input_el_redisplay (self);
+	return success;
 }
 
 static void
@@ -761,11 +861,13 @@ static struct input_vtable input_el_vtable =
 {
 	.start               = input_el_start,
 	.stop                = input_el_stop,
+	.prepare             = input_el_prepare,
 	.destroy             = input_el_destroy,
 
 	.hide                = input_el_hide,
 	.show                = input_el_show,
 	.set_prompt          = input_el_set_prompt,
+	.replace_line        = input_el_replace_line,
 	.ding                = input_el_ding,
 
 	.load_history        = input_el_load_history,
@@ -801,11 +903,18 @@ enum color_mode
 
 static struct app_context
 {
+	ev_child child_watcher;             ///< SIGCHLD watcher
+	ev_signal winch_watcher;            ///< SIGWINCH watcher
+	ev_signal term_watcher;             ///< SIGTERM watcher
+	ev_signal int_watcher;              ///< SIGINT watcher
+	ev_io tty_watcher;                  ///< Terminal watcher
+
 	struct input *input;                ///< Input interface
 	char *attrs_defaults[ATTR_COUNT];   ///< Default terminal attributes
 	char *attrs[ATTR_COUNT];            ///< Terminal attributes
 
 	struct backend *backend;            ///< Our current backend
+	char *editor_filename;              ///< File for input line editor
 
 	struct config config;               ///< Program configuration
 	enum color_mode color_mode;         ///< Colour output mode
@@ -2574,10 +2683,219 @@ fail:
 	free (input);
 }
 
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+// The ability to use an external editor on the input line has been shamelessly
+// copypasted from degesch with minor changes only.
+
+static void
+suspend_terminal (struct app_context *ctx)
+{
+	ctx->input->vtable->hide (ctx->input);
+	ev_io_stop (EV_DEFAULT_ &ctx->tty_watcher);
+	ctx->input->vtable->prepare (ctx->input, false);
+}
+
+static void
+resume_terminal (struct app_context *ctx)
+{
+	ctx->input->vtable->prepare (ctx->input, true);
+	ev_io_start (EV_DEFAULT_ &ctx->tty_watcher);
+	ctx->input->vtable->show (ctx->input);
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+/// This differs from the non-unique version in that we expect the filename
+/// to be something like a pattern for mkstemp(), so the resulting path can
+/// reside in a system-wide directory with no risk of a conflict.
+static char *
+resolve_relative_runtime_unique_filename (const char *filename)
+{
+	struct str path;
+	str_init (&path);
+
+	const char *runtime_dir = getenv ("XDG_RUNTIME_DIR");
+	if (runtime_dir && *runtime_dir == '/')
+		str_append (&path, runtime_dir);
+	else
+		str_append (&path, "/tmp");
+	str_append_printf (&path, "/%s/%s", PROGRAM_NAME, filename);
+
+	// Try to create the file's ancestors;
+	// typically the user will want to immediately create a file in there
+	const char *last_slash = strrchr (path.str, '/');
+	if (last_slash && last_slash != path.str)
+	{
+		char *copy = xstrndup (path.str, last_slash - path.str);
+		(void) mkdir_with_parents (copy, NULL);
+		free (copy);
+	}
+	return str_steal (&path);
+}
+
+static bool
+xwrite (int fd, const char *data, size_t len, struct error **e)
+{
+	size_t written = 0;
+	while (written < len)
+	{
+		ssize_t res = write (fd, data + written, len - written);
+		if (res >= 0)
+			written += res;
+		else if (errno != EINTR)
+			FAIL ("%s", strerror (errno));
+	}
+	return true;
+}
+
+static bool
+dump_line_to_file (const char *line, char *template, struct error **e)
+{
+	int fd = mkstemp (template);
+	if (fd < 0)
+		FAIL ("%s", strerror (errno));
+
+	bool success = xwrite (fd, line, strlen (line), e);
+	if (!success)
+		(void) unlink (template);
+
+	xclose (fd);
+	return success;
+}
+
+static char *
+try_dump_line_to_file (const char *line)
+{
+	char *template = resolve_filename
+		("input.XXXXXX", resolve_relative_runtime_unique_filename);
+
+	struct error *e = NULL;
+	if (dump_line_to_file (line, template, &e))
+		return template;
+
+	print_error ("%s: %s",
+		"failed to create a temporary file for editing", e->message);
+	error_free (e);
+	free (template);
+	return NULL;
+}
+
+static pid_t
+spawn_helper_child (struct app_context *ctx)
+{
+	suspend_terminal (ctx);
+	pid_t child = fork ();
+	switch (child)
+	{
+	case -1:
+	{
+		int saved_errno = errno;
+		resume_terminal (ctx);
+		errno = saved_errno;
+		break;
+	}
+	case 0:
+		// Put the child in a new foreground process group
+		hard_assert (setpgid (0, 0) != -1);
+		hard_assert (tcsetpgrp (STDOUT_FILENO, getpgid (0)) != -1);
+		break;
+	default:
+		// Make sure of it in the parent as well before continuing
+		(void) setpgid (child, child);
+	}
+	return child;
+}
+
+static void
+run_editor (const char *line, void *user_data)
+{
+	struct app_context *ctx = user_data;
+	hard_assert (!ctx->editor_filename);
+
+	char *filename;
+	if (!(filename = try_dump_line_to_file (line)))
+		return;
+
+	const char *command;
+	if (!(command = getenv ("VISUAL"))
+	 && !(command = getenv ("EDITOR")))
+		command = "vi";
+
+	switch (spawn_helper_child (ctx))
+	{
+	case 0:
+		execlp (command, command, filename, NULL);
+		print_error ("%s: %s", "failed to launch editor", strerror (errno));
+		_exit (EXIT_FAILURE);
+	case -1:
+		print_error ("%s: %s", "failed to launch editor", strerror (errno));
+		free (filename);
+		break;
+	default:
+		ctx->editor_filename = filename;
+	}
+}
+
+static void
+process_edited_input (struct app_context *ctx)
+{
+	struct str input;
+	str_init (&input);
+
+	struct error *e = NULL;
+	if (!read_file (ctx->editor_filename, &input, &e))
+	{
+		print_error ("%s: %s", "input editing failed", e->message);
+		error_free (e);
+	}
+	else if (!ctx->input->vtable->replace_line (ctx->input, input.str))
+		print_error ("%s: %s", "input editing failed",
+			"could not re-insert modified text");
+
+	if (unlink (ctx->editor_filename))
+		print_error ("could not unlink `%s': %s",
+			ctx->editor_filename, strerror (errno));
+
+	free (ctx->editor_filename);
+	ctx->editor_filename = NULL;
+	str_free (&input);
+}
+
+static void
+on_child (EV_P_ ev_child *handle, int revents)
+{
+	(void) revents;
+	struct app_context *ctx = ev_userdata (loop);
+
+	// I am not a shell, stopping not allowed
+	int status = handle->rstatus;
+	if (WIFSTOPPED (status)
+	 || WIFCONTINUED (status))
+	{
+		kill (-handle->rpid, SIGKILL);
+		return;
+	}
+	// I don't recognize this child (we should also check PID)
+	if (!ctx->editor_filename)
+		return;
+
+	hard_assert (tcsetpgrp (STDOUT_FILENO, getpgid (0)) != -1);
+	resume_terminal (ctx);
+
+	if (WIFSIGNALED (status))
+		print_error ("editor died from signal %d", WTERMSIG (status));
+	else if (WIFEXITED (status) && WEXITSTATUS (status) != 0)
+		print_error ("editor returned status %d", WEXITSTATUS (status));
+	else
+		process_edited_input (ctx);
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
 static void
 on_winch (EV_P_ ev_signal *handle, int revents)
 {
-	(void) loop;
 	(void) handle;
 	(void) revents;
 
@@ -2604,6 +2922,39 @@ on_tty_readable (EV_P_ ev_io *handle, int revents)
 	if (revents & EV_READ)
 		ctx->input->vtable->on_tty_readable (ctx->input);
 }
+
+static void
+init_watchers (struct app_context *ctx)
+{
+	if (!EV_DEFAULT)
+		exit_fatal ("libev initialization failed");
+
+	// So that if the remote end closes the connection, attempts to write to
+	// the socket don't terminate the program
+	(void) signal (SIGPIPE, SIG_IGN);
+
+	// So that we can write to the terminal while we're running a backlog
+	// helper.  This is also inherited by the child so that it doesn't stop
+	// when it calls tcsetpgrp().
+	(void) signal (SIGTTOU, SIG_IGN);
+
+	ev_child_init (&ctx->child_watcher, on_child, 0, true);
+	ev_child_start (EV_DEFAULT_ &ctx->child_watcher);
+
+	ev_signal_init (&ctx->winch_watcher, on_winch, SIGWINCH);
+	ev_signal_start (EV_DEFAULT_ &ctx->winch_watcher);
+
+	ev_signal_init (&ctx->term_watcher, on_terminated, SIGTERM);
+	ev_signal_start (EV_DEFAULT_ &ctx->term_watcher);
+
+	ev_signal_init (&ctx->int_watcher, on_terminated, SIGINT);
+	ev_signal_start (EV_DEFAULT_ &ctx->int_watcher);
+
+	ev_io_init (&ctx->tty_watcher, on_tty_readable, STDIN_FILENO, EV_READ);
+	ev_io_start (EV_DEFAULT_ &ctx->tty_watcher);
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 static void
 parse_program_arguments (struct app_context *ctx, int argc, char **argv,
@@ -2762,6 +3113,7 @@ main (int argc, char *argv[])
 	g_ctx.input = input_new ();
 	g_ctx.input->user_data = &g_ctx;
 	g_ctx.input->on_input = process_input;
+	g_ctx.input->on_run_editor = run_editor;
 
 	char *history_path =
 		xstrdup_printf ("%s/" PROGRAM_NAME "/history", data_home);
@@ -2781,35 +3133,11 @@ main (int argc, char *argv[])
 				INPUT_END_IGNORE));
 	}
 
-	// So that if the remote end closes the connection, attempts to write to
-	// the socket don't terminate the program
-	(void) signal (SIGPIPE, SIG_IGN);
-
-	struct ev_loop *loop = EV_DEFAULT;
-	if (!loop)
-		exit_fatal ("libev initialization failed");
-
-	ev_signal winch_watcher;
-	ev_signal term_watcher;
-	ev_signal int_watcher;
-	ev_io tty_watcher;
-
-	ev_signal_init (&winch_watcher, on_winch, SIGWINCH);
-	ev_signal_start (EV_DEFAULT_ &winch_watcher);
-
-	ev_signal_init (&term_watcher, on_terminated, SIGTERM);
-	ev_signal_start (EV_DEFAULT_ &term_watcher);
-
-	ev_signal_init (&int_watcher, on_terminated, SIGINT);
-	ev_signal_start (EV_DEFAULT_ &int_watcher);
-
-	ev_io_init (&tty_watcher, on_tty_readable, STDIN_FILENO, EV_READ);
-	ev_io_start (EV_DEFAULT_ &tty_watcher);
-
+	init_watchers (&g_ctx);
 	g_ctx.input->vtable->start (g_ctx.input, PROGRAM_NAME);
 
-	ev_set_userdata (loop, &g_ctx);
-	ev_run (loop, 0);
+	ev_set_userdata (EV_DEFAULT_ &g_ctx);
+	ev_run (EV_DEFAULT_ 0);
 
 	// User has terminated the program, let's save the history and clean up
 	struct error *e = NULL;
@@ -2833,6 +3161,6 @@ main (int argc, char *argv[])
 	iconv_close (g_ctx.term_to_utf8);
 	config_free (&g_ctx.config);
 	free_terminal ();
-	ev_loop_destroy (loop);
+	ev_loop_destroy (EV_DEFAULT);
 	return EXIT_SUCCESS;
 }
