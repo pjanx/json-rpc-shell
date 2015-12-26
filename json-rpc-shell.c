@@ -792,124 +792,6 @@ input_el_new (void)
 
 // --- Main program ------------------------------------------------------------
 
-// HTTP/S and WS/S require significantly different handling.  While for HTTP we
-// can just use the cURL easy interface, with WebSockets it gets a bit more
-// complicated and we implement it all by ourselves.
-//
-// Luckily on a higher level the application doesn't need to bother itself with
-// the details and the backend API can be very simple.
-
-struct app_context;
-
-struct backend_iface
-{
-	/// Prepare the backend for RPC calls
-	void (*init) (struct app_context *ctx,
-		const char *endpoint, struct http_parser_url *url);
-
-	/// Add an HTTP header to send with requests
-	void (*add_header) (struct app_context *ctx, const char *header);
-
-	/// Make an RPC call
-	bool (*make_call) (struct app_context *ctx,
-		const char *request, bool expect_content,
-		struct str *buf, struct error **e);
-
-	/// Do everything necessary to deal with ev_break(EVBREAK_ALL)
-	void (*on_quit) (struct app_context *ctx);
-
-	/// Free any resources
-	void (*destroy) (struct app_context *ctx);
-};
-
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
-enum ws_handler_state
-{
-	WS_HANDLER_CONNECTING,              ///< Parsing HTTP
-	WS_HANDLER_OPEN,                    ///< Parsing WebSockets frames
-	WS_HANDLER_CLOSING,                 ///< Closing the connection
-	WS_HANDLER_CLOSED                   ///< Dead
-};
-
-#define BACKEND_WS_MAX_PAYLOAD_LEN  UINT32_MAX
-
-struct ws_context
-{
-	// Configuration:
-
-	char *endpoint;                     ///< Endpoint URL
-	struct http_parser_url url;         ///< Parsed URL
-	struct str_vector extra_headers;    ///< Extra headers for the handshake
-
-	// Events:
-
-	bool waiting_for_event;             ///< Running a separate loop to wait?
-	struct error *e;                    ///< Error while waiting for event
-
-	ev_timer timeout_watcher;           ///< Connection timeout watcher
-	struct str *response_buffer;        ///< Buffer for the incoming messages
-
-	// The TCP transport:
-
-	int server_fd;                      ///< Socket FD of the server
-	ev_io read_watcher;                 ///< Server FD read watcher
-	SSL_CTX *ssl_ctx;                   ///< SSL context
-	SSL *ssl;                           ///< SSL connection
-
-	// WebSockets protocol handling:
-
-	enum ws_handler_state state;        ///< State
-	char *key;                          ///< Key for the current handshake
-
-	http_parser hp;                     ///< HTTP parser
-	bool parsing_header_value;          ///< Parsing header value or field?
-	struct str field;                   ///< Field part buffer
-	struct str value;                   ///< Value part buffer
-	struct str_map headers;             ///< HTTP Headers
-
-	struct ws_parser parser;            ///< Protocol frame parser
-	bool expecting_continuation;        ///< For non-control traffic
-
-	enum ws_opcode message_opcode;      ///< Opcode for the current message
-	struct str message_data;            ///< Concatenated message data
-};
-
-static void
-ws_context_init (struct ws_context *self)
-{
-	memset (self, 0, sizeof *self);
-	ev_timer_init (&self->timeout_watcher, NULL, 0, 0);
-	self->server_fd = -1;
-	ev_io_init (&self->read_watcher, NULL, 0, 0);
-	http_parser_init (&self->hp, HTTP_RESPONSE);
-	str_init (&self->field);
-	str_init (&self->value);
-	str_map_init (&self->headers);
-	self->headers.key_xfrm = tolower_ascii_strxfrm;
-	self->headers.free = free;
-	ws_parser_init (&self->parser);
-	str_init (&self->message_data);
-	str_vector_init (&self->extra_headers);
-}
-
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
-struct curl_context
-{
-	CURL *curl;                         ///< cURL handle
-	char curl_error[CURL_ERROR_SIZE];   ///< cURL error info buffer
-	struct curl_slist *headers;         ///< Headers
-};
-
-static void
-curl_context_init (struct curl_context *self)
-{
-	memset (self, 0, sizeof *self);
-}
-
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
 enum color_mode
 {
 	COLOR_AUTO,                         ///< Autodetect if colours are available
@@ -923,10 +805,7 @@ static struct app_context
 	char *attrs_defaults[ATTR_COUNT];   ///< Default terminal attributes
 	char *attrs[ATTR_COUNT];            ///< Terminal attributes
 
-	struct backend_iface *backend;      ///< Our current backend
-
-	struct ws_context ws;               ///< WebSockets backend data
-	struct curl_context curl;           ///< cURL backend data
+	struct backend *backend;            ///< Our current backend
 
 	struct config config;               ///< Program configuration
 	enum color_mode color_mode;         ///< Colour output mode
@@ -941,6 +820,37 @@ static struct app_context
 	iconv_t term_from_utf8;             ///< UTF-8 to terminal encoding
 }
 g_ctx;
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+// HTTP/S and WS/S require significantly different handling.  While for HTTP we
+// can just use the cURL easy interface, with WebSockets it gets a bit more
+// complicated and we implement it all by ourselves.
+//
+// Luckily on a higher level the application doesn't need to bother itself with
+// the details and the backend API can be very simple.
+
+struct backend
+{
+	struct backend_vtable *vtable;      ///< Virtual methods
+};
+
+struct backend_vtable
+{
+	/// Add an HTTP header to send with requests
+	void (*add_header) (struct backend *backend, const char *header);
+
+	/// Make an RPC call
+	bool (*make_call) (struct backend *backend,
+		const char *request, bool expect_content,
+		struct str *buf, struct error **e);
+
+	/// Do everything necessary to deal with ev_break(EVBREAK_ALL)
+	void (*on_quit) (struct backend *backend);
+
+	/// Free any resources
+	void (*destroy) (struct backend *backend);
+};
 
 // --- Configuration -----------------------------------------------------------
 
@@ -1227,25 +1137,65 @@ on_config_attribute_change (struct config_item *item)
 
 // --- WebSockets backend ------------------------------------------------------
 
-static void
-backend_ws_init (struct app_context *ctx,
-	const char *endpoint, struct http_parser_url *url)
+enum ws_handler_state
 {
-	struct ws_context *self = &ctx->ws;
-	ws_context_init (self);
-	self->endpoint = xstrdup (endpoint);
-	self->url = *url;
+	WS_HANDLER_CONNECTING,              ///< Parsing HTTP
+	WS_HANDLER_OPEN,                    ///< Parsing WebSockets frames
+	WS_HANDLER_CLOSING,                 ///< Closing the connection
+	WS_HANDLER_CLOSED                   ///< Dead
+};
 
-	SSL_library_init ();
-	atexit (EVP_cleanup);
-	SSL_load_error_strings ();
-	atexit (ERR_free_strings);
-}
+#define BACKEND_WS_MAX_PAYLOAD_LEN  UINT32_MAX
+
+struct ws_context
+{
+	struct backend super;               ///< Parent class
+	struct app_context *ctx;            ///< Application context
+
+	// Configuration:
+
+	char *endpoint;                     ///< Endpoint URL
+	struct http_parser_url url;         ///< Parsed URL
+	struct str_vector extra_headers;    ///< Extra headers for the handshake
+
+	// Events:
+
+	bool waiting_for_event;             ///< Running a separate loop to wait?
+	struct error *e;                    ///< Error while waiting for event
+
+	ev_timer timeout_watcher;           ///< Connection timeout watcher
+	struct str *response_buffer;        ///< Buffer for the incoming messages
+
+	// The TCP transport:
+
+	int server_fd;                      ///< Socket FD of the server
+	ev_io read_watcher;                 ///< Server FD read watcher
+	SSL_CTX *ssl_ctx;                   ///< SSL context
+	SSL *ssl;                           ///< SSL connection
+
+	// WebSockets protocol handling:
+
+	enum ws_handler_state state;        ///< State
+	char *key;                          ///< Key for the current handshake
+
+	http_parser hp;                     ///< HTTP parser
+	bool parsing_header_value;          ///< Parsing header value or field?
+	struct str field;                   ///< Field part buffer
+	struct str value;                   ///< Value part buffer
+	struct str_map headers;             ///< HTTP Headers
+
+	struct ws_parser parser;            ///< Protocol frame parser
+	bool expecting_continuation;        ///< For non-control traffic
+
+	enum ws_opcode message_opcode;      ///< Opcode for the current message
+	struct str message_data;            ///< Concatenated message data
+};
 
 static void
-backend_ws_add_header (struct app_context *ctx, const char *header)
+backend_ws_add_header (struct backend *backend, const char *header)
 {
-	str_vector_add (&ctx->ws.extra_headers, header);
+	struct ws_context *self = (struct ws_context *) backend;
+	str_vector_add (&self->extra_headers, header);
 }
 
 enum ws_read_result
@@ -1258,10 +1208,9 @@ enum ws_read_result
 
 static enum ws_read_result
 backend_ws_fill_read_buffer_tls
-	(struct app_context *ctx, void *buf, size_t *len)
+	(struct ws_context *self, void *buf, size_t *len)
 {
 	int n_read;
-	struct ws_context *self = &ctx->ws;
 start:
 	n_read = SSL_read (self->ssl, buf, *len);
 
@@ -1293,10 +1242,9 @@ start:
 
 static enum ws_read_result
 backend_ws_fill_read_buffer
-	(struct app_context *ctx, void *buf, size_t *len)
+	(struct ws_context *self, void *buf, size_t *len)
 {
 	ssize_t n_read;
-	struct ws_context *self = &ctx->ws;
 start:
 	n_read = recv (self->server_fd, buf, *len, 0);
 	if (n_read > 0)
@@ -1391,9 +1339,8 @@ backend_ws_on_headers_complete (http_parser *parser)
 }
 
 static bool
-backend_ws_finish_handshake (struct app_context *ctx, struct error **e)
+backend_ws_finish_handshake (struct ws_context *self, struct error **e)
 {
-	struct ws_context *self = &ctx->ws;
 	if (self->hp.http_major != 1 || self->hp.http_minor < 1)
 		FAIL ("incompatible HTTP version: %d.%d",
 			self->hp.http_major, self->hp.http_minor);
@@ -1429,9 +1376,8 @@ backend_ws_finish_handshake (struct app_context *ctx, struct error **e)
 }
 
 static bool
-backend_ws_on_data (struct app_context *ctx, const void *data, size_t len)
+backend_ws_on_data (struct ws_context *self, const void *data, size_t len)
 {
-	struct ws_context *self = &ctx->ws;
 	if (self->state != WS_HANDLER_CONNECTING)
 		return ws_parser_push (&self->parser, data, len);
 
@@ -1449,7 +1395,7 @@ backend_ws_on_data (struct app_context *ctx, const void *data, size_t len)
 	if (self->hp.upgrade)
 	{
 		struct error *e = NULL;
-		if (!backend_ws_finish_handshake (ctx, &e))
+		if (!backend_ws_finish_handshake (self, &e))
 		{
 			print_error ("WS handshake failed: %s", e->message);
 			error_free (e);
@@ -1482,9 +1428,8 @@ backend_ws_on_data (struct app_context *ctx, const void *data, size_t len)
 }
 
 static void
-backend_ws_close_connection (struct app_context *ctx)
+backend_ws_close_connection (struct ws_context *self)
 {
-	struct ws_context *self = &ctx->ws;
 	if (self->server_fd == -1)
 		return;
 
@@ -1519,10 +1464,9 @@ backend_ws_on_fd_ready (EV_P_ ev_io *handle, int revents)
 	(void) loop;
 	(void) revents;
 
-	struct app_context *ctx = handle->data;
-	struct ws_context *self = &ctx->ws;
+	struct ws_context *self = handle->data;
 
-	enum ws_read_result (*fill_buffer)(struct app_context *, void *, size_t *)
+	enum ws_read_result (*fill_buffer)(struct ws_context *, void *, size_t *)
 		= self->ssl
 		? backend_ws_fill_read_buffer_tls
 		: backend_ws_fill_read_buffer;
@@ -1534,7 +1478,7 @@ backend_ws_on_fd_ready (EV_P_ ev_io *handle, int revents)
 		// Try to read some data in a non-blocking manner
 		size_t n_read = sizeof buf;
 		(void) set_blocking (self->server_fd, false);
-		enum ws_read_result result = fill_buffer (ctx, buf, &n_read);
+		enum ws_read_result result = fill_buffer (self, buf, &n_read);
 		(void) set_blocking (self->server_fd, true);
 
 		switch (result)
@@ -1550,7 +1494,7 @@ backend_ws_on_fd_ready (EV_P_ ev_io *handle, int revents)
 			close_connection = true;
 			goto end;
 		case WS_READ_OK:
-			if (backend_ws_on_data (ctx, buf, n_read))
+			if (backend_ws_on_data (self, buf, n_read))
 				break;
 
 			// XXX: maybe we should wait until we receive an EOF
@@ -1561,26 +1505,26 @@ backend_ws_on_fd_ready (EV_P_ ev_io *handle, int revents)
 
 end:
 	if (close_connection)
-		backend_ws_close_connection (ctx);
+		backend_ws_close_connection (self);
 }
 
 static bool
-backend_ws_write (struct app_context *ctx, const void *data, size_t len)
+backend_ws_write (struct ws_context *self, const void *data, size_t len)
 {
-	if (!soft_assert (ctx->ws.server_fd != -1))
+	if (!soft_assert (self->server_fd != -1))
 		return false;
 
-	if (ctx->ws.ssl)
+	if (self->ssl)
 	{
 		// TODO: call SSL_get_error() to detect if a clean shutdown has occured
-		if (SSL_write (ctx->ws.ssl, data, len) != (int) len)
+		if (SSL_write (self->ssl, data, len) != (int) len)
 		{
 			print_debug ("%s: %s: %s", __func__, "SSL_write",
 				ERR_error_string (ERR_get_error (), NULL));
 			return false;
 		}
 	}
-	else if (write (ctx->ws.server_fd, data, len) != (ssize_t) len)
+	else if (write (self->server_fd, data, len) != (ssize_t) len)
 	{
 		print_debug ("%s: %s: %s", __func__, "write", strerror (errno));
 		return false;
@@ -1589,7 +1533,7 @@ backend_ws_write (struct app_context *ctx, const void *data, size_t len)
 }
 
 static bool
-backend_ws_establish_connection (struct app_context *ctx,
+backend_ws_establish_connection (struct ws_context *self,
 	const char *host, const char *port, struct error **e)
 {
 	struct addrinfo gai_hints, *gai_result, *gai_iter;
@@ -1626,7 +1570,7 @@ backend_ws_establish_connection (struct app_context *ctx,
 		else
 			real_host = buf;
 
-		if (ctx->verbose)
+		if (self->ctx->verbose)
 		{
 			char *address = format_host_port_pair (real_host, port);
 			print_status ("connecting to %s...", address);
@@ -1644,15 +1588,14 @@ backend_ws_establish_connection (struct app_context *ctx,
 	if (!gai_iter)
 		FAIL ("connection failed");
 
-	ctx->ws.server_fd = sockfd;
+	self->server_fd = sockfd;
 	return true;
 }
 
 static bool
-backend_ws_set_up_ssl_ctx (struct app_context *ctx)
+backend_ws_set_up_ssl_ctx (struct ws_context *self)
 {
-	struct ws_context *self = &ctx->ws;
-	if (ctx->trust_all)
+	if (self->ctx->trust_all)
 	{
 		SSL_CTX_set_verify (self->ssl_ctx, SSL_VERIFY_NONE, NULL);
 		return true;
@@ -1660,9 +1603,9 @@ backend_ws_set_up_ssl_ctx (struct app_context *ctx)
 
 	// TODO: try to resolve filenames relative to configuration directories
 	const char *ca_file = get_config_string
-		(ctx->config.root, "connection.tls_ca_file");
+		(self->ctx->config.root, "connection.tls_ca_file");
 	const char *ca_path = get_config_string
-		(ctx->config.root, "connection.tls_ca_path");
+		(self->ctx->config.root, "connection.tls_ca_path");
 	if (ca_file || ca_path)
 	{
 		if (SSL_CTX_load_verify_locations (self->ssl_ctx, ca_file, ca_path))
@@ -1675,16 +1618,15 @@ backend_ws_set_up_ssl_ctx (struct app_context *ctx)
 }
 
 static bool
-backend_ws_initialize_tls (struct app_context *ctx,
+backend_ws_initialize_tls (struct ws_context *self,
 	const char *server_name, struct error **e)
 {
-	struct ws_context *self = &ctx->ws;
 	const char *error_info = NULL;
 	if (!self->ssl_ctx)
 	{
 		if (!(self->ssl_ctx = SSL_CTX_new (SSLv23_client_method ())))
 			goto error_ssl_1;
-		if (!backend_ws_set_up_ssl_ctx (ctx))
+		if (!backend_ws_set_up_ssl_ctx (self))
 			goto error_ssl_2;
 	}
 
@@ -1730,7 +1672,7 @@ error_ssl_1:
 }
 
 static bool
-backend_ws_send_message (struct app_context *ctx,
+backend_ws_send_message (struct ws_context *self,
 	enum ws_opcode opcode, const void *data, size_t len)
 {
 	struct str header;
@@ -1755,7 +1697,7 @@ backend_ws_send_message (struct app_context *ctx,
 		return false;
 	str_pack_u32 (&header, mask);
 
-	bool result = backend_ws_write (ctx, header.str, header.len);
+	bool result = backend_ws_write (self, header.str, header.len);
 	str_free (&header);
 	while (result && len)
 	{
@@ -1763,7 +1705,7 @@ backend_ws_send_message (struct app_context *ctx,
 		char masked[block_size];
 		memcpy (masked, data, block_size);
 		ws_parser_unmask (masked, block_size, mask);
-		result = backend_ws_write (ctx, masked, block_size);
+		result = backend_ws_write (self, masked, block_size);
 
 		len -= block_size;
 		data = (const uint8_t *) data + block_size;
@@ -1772,7 +1714,7 @@ backend_ws_send_message (struct app_context *ctx,
 }
 
 static bool
-backend_ws_send_control (struct app_context *ctx,
+backend_ws_send_control (struct ws_context *self,
 	enum ws_opcode opcode, const void *data, size_t len)
 {
 	if (len > WS_MAX_CONTROL_PAYLOAD_LEN)
@@ -1782,16 +1724,14 @@ backend_ws_send_control (struct app_context *ctx,
 		len = WS_MAX_CONTROL_PAYLOAD_LEN;
 	}
 
-	return backend_ws_send_message (ctx, opcode, data, len);
+	return backend_ws_send_message (self, opcode, data, len);
 }
 
 static bool
-backend_ws_fail (struct app_context *ctx, enum ws_status reason)
+backend_ws_fail (struct ws_context *self, enum ws_status reason)
 {
-	struct ws_context *self = &ctx->ws;
-
 	uint8_t payload[2] = { reason << 8, reason };
-	(void) backend_ws_send_control (ctx, WS_OPCODE_CLOSE,
+	(void) backend_ws_send_control (self, WS_OPCODE_CLOSE,
 		payload, sizeof payload);
 
 	// The caller should immediately proceed to close the TCP connection,
@@ -1803,8 +1743,7 @@ backend_ws_fail (struct app_context *ctx, enum ws_status reason)
 static bool
 backend_ws_on_frame_header (void *user_data, const struct ws_parser *parser)
 {
-	struct app_context *ctx = user_data;
-	struct ws_context *self = &ctx->ws;
+	struct ws_context *self = user_data;
 
 	// Note that we aren't expected to send any close frame before closing the
 	// connection when the frame is unmasked
@@ -1816,15 +1755,15 @@ backend_ws_on_frame_header (void *user_data, const struct ws_parser *parser)
 	 || (!ws_is_control_frame (parser->opcode) &&
 		(self->expecting_continuation && parser->opcode != WS_OPCODE_CONT))
 	 || parser->payload_len >= 0x8000000000000000ULL)
-		return backend_ws_fail (ctx, WS_STATUS_PROTOCOL_ERROR);
+		return backend_ws_fail (self, WS_STATUS_PROTOCOL_ERROR);
 	else if (parser->payload_len > BACKEND_WS_MAX_PAYLOAD_LEN)
-		return backend_ws_fail (ctx, WS_STATUS_MESSAGE_TOO_BIG);
+		return backend_ws_fail (self, WS_STATUS_MESSAGE_TOO_BIG);
 	return true;
 }
 
 static bool
 backend_ws_finish_closing_handshake
-	(struct app_context *ctx, const struct ws_parser *parser)
+	(struct ws_context *self, const struct ws_parser *parser)
 {
 	struct str reason;
 	str_init (&reason);
@@ -1842,31 +1781,29 @@ backend_ws_finish_closing_handshake
 			parser->input.str + 2, parser->payload_len - 2);
 	}
 
-	char *s = iconv_xstrdup (ctx->term_from_utf8,
+	char *s = iconv_xstrdup (self->ctx->term_from_utf8,
 		reason.str, reason.len, NULL);
 	print_status ("server closed the connection (%s)", s);
 	str_free (&reason);
 	free (s);
 
-	return backend_ws_send_control (ctx, WS_OPCODE_CLOSE,
+	return backend_ws_send_control (self, WS_OPCODE_CLOSE,
 		parser->input.str, parser->payload_len);
 }
 
 static bool
 backend_ws_on_control_frame
-	(struct app_context *ctx, const struct ws_parser *parser)
+	(struct ws_context *self, const struct ws_parser *parser)
 {
-	struct ws_context *self = &ctx->ws;
 	switch (parser->opcode)
 	{
 	case WS_OPCODE_CLOSE:
 		// We've received an unsolicited server close
 		if (self->state != WS_HANDLER_CLOSING)
-			(void) backend_ws_finish_closing_handshake (ctx, parser);
-
+			(void) backend_ws_finish_closing_handshake (self, parser);
 		return false;
 	case WS_OPCODE_PING:
-		if (!backend_ws_send_control (ctx, WS_OPCODE_PONG,
+		if (!backend_ws_send_control (self, WS_OPCODE_PONG,
 			parser->input.str, parser->payload_len))
 			return false;
 		break;
@@ -1875,19 +1812,17 @@ backend_ws_on_control_frame
 		break;
 	default:
 		// Unknown control frame
-		return backend_ws_fail (ctx, WS_STATUS_PROTOCOL_ERROR);
+		return backend_ws_fail (self, WS_STATUS_PROTOCOL_ERROR);
 	}
 	return true;
 }
 
 static bool
-backend_ws_on_message (struct app_context *ctx,
+backend_ws_on_message (struct ws_context *self,
 	enum ws_opcode type, const void *data, size_t len)
 {
-	struct ws_context *self = &ctx->ws;
-
 	if (type != WS_OPCODE_TEXT)
-		return backend_ws_fail (ctx, WS_STATUS_UNSUPPORTED_DATA);
+		return backend_ws_fail (self, WS_STATUS_UNSUPPORTED_DATA);
 
 	if (!self->waiting_for_event || !self->response_buffer)
 	{
@@ -1903,15 +1838,14 @@ backend_ws_on_message (struct app_context *ctx,
 static bool
 backend_ws_on_frame (void *user_data, const struct ws_parser *parser)
 {
-	struct app_context *ctx = user_data;
-	struct ws_context *self = &ctx->ws;
+	struct ws_context *self = user_data;
 	if (ws_is_control_frame (parser->opcode))
-		return backend_ws_on_control_frame (ctx, parser);
+		return backend_ws_on_control_frame (self, parser);
 
 	// TODO: do this rather in "on_frame_header"
 	if (self->message_data.len + parser->payload_len
 		> BACKEND_WS_MAX_PAYLOAD_LEN)
-		return backend_ws_fail (ctx, WS_STATUS_MESSAGE_TOO_BIG);
+		return backend_ws_fail (self, WS_STATUS_MESSAGE_TOO_BIG);
 
 	if (!self->expecting_continuation)
 		self->message_opcode = parser->opcode;
@@ -1925,9 +1859,9 @@ backend_ws_on_frame (void *user_data, const struct ws_parser *parser)
 
 	if (self->message_opcode == WS_OPCODE_TEXT
 	 && !utf8_validate (self->parser.input.str, self->parser.input.len))
-		return backend_ws_fail (ctx, WS_STATUS_INVALID_PAYLOAD_DATA);
+		return backend_ws_fail (self, WS_STATUS_INVALID_PAYLOAD_DATA);
 
-	bool result = backend_ws_on_message (ctx, self->message_opcode,
+	bool result = backend_ws_on_message (self, self->message_opcode,
 		self->message_data.str, self->message_data.len);
 	str_reset (&self->message_data);
 	return result;
@@ -1939,18 +1873,15 @@ backend_ws_on_connection_timeout (EV_P_ ev_timer *handle, int revents)
 	(void) loop;
 	(void) revents;
 
-	struct app_context *ctx = handle->data;
-	struct ws_context *self = &ctx->ws;
-
+	struct ws_context *self = handle->data;
 	hard_assert (self->waiting_for_event);
 	error_set (&self->e, "connection timeout");
-	backend_ws_close_connection (ctx);
+	backend_ws_close_connection (self);
 }
 
 static bool
-backend_ws_connect (struct app_context *ctx, struct error **e)
+backend_ws_connect (struct ws_context *self, struct error **e)
 {
-	struct ws_context *self = &ctx->ws;
 	bool result = false;
 
 	char *url_schema = xstrndup (self->endpoint +
@@ -1984,10 +1915,10 @@ backend_ws_connect (struct app_context *ctx, struct error **e)
 			self->url.field_data[UF_QUERY].len);
 	}
 
-	if (!backend_ws_establish_connection (ctx, url_host, url_port, e))
+	if (!backend_ws_establish_connection (self, url_host, url_port, e))
 		goto fail_1;
 
-	if (use_tls && !backend_ws_initialize_tls (ctx, url_host, e))
+	if (use_tls && !backend_ws_initialize_tls (self, url_host, e))
 		goto fail_2;
 
 	unsigned char key[16];
@@ -2017,7 +1948,7 @@ backend_ws_connect (struct app_context *ctx, struct error **e)
 		str_append_printf (&request, "%s\r\n", self->extra_headers.vector[i]);
 	str_append_printf (&request, "\r\n");
 
-	bool written = backend_ws_write (ctx, request.str, request.len);
+	bool written = backend_ws_write (self, request.str, request.len);
 	str_free (&request);
 	if (!written)
 	{
@@ -2033,11 +1964,11 @@ backend_ws_connect (struct app_context *ctx, struct error **e)
 	ws_parser_init (&self->parser);
 	self->parser.on_frame_header = backend_ws_on_frame_header;
 	self->parser.on_frame        = backend_ws_on_frame;
-	self->parser.user_data       = ctx;
+	self->parser.user_data       = self;
 
 	ev_io_init (&self->read_watcher,
 		backend_ws_on_fd_ready, self->server_fd, EV_READ);
-	self->read_watcher.data = ctx;
+	self->read_watcher.data = self;
 	ev_io_start (EV_DEFAULT_ &self->read_watcher);
 
 	// XXX: we should do everything non-blocking and include establishing
@@ -2077,22 +2008,22 @@ fail_1:
 }
 
 static bool
-backend_ws_make_call (struct app_context *ctx,
+backend_ws_make_call (struct backend *backend,
 	const char *request, bool expect_content, struct str *buf, struct error **e)
 {
-	struct ws_context *self = &ctx->ws;
+	struct ws_context *self = (struct ws_context *) backend;
 
 	if (self->server_fd == -1)
-		if (!backend_ws_connect (ctx, e))
+		if (!backend_ws_connect (self, e))
 			return false;
 
 	while (true)
 	{
-		if (backend_ws_send_message (ctx,
+		if (backend_ws_send_message (self,
 			WS_OPCODE_TEXT, request, strlen (request)))
 			break;
 		print_status ("connection failed, reconnecting");
-		if (!backend_ws_connect (ctx, e))
+		if (!backend_ws_connect (self, e))
 			return false;
 	}
 
@@ -2118,9 +2049,9 @@ backend_ws_make_call (struct app_context *ctx,
 }
 
 static void
-backend_ws_on_quit (struct app_context *ctx)
+backend_ws_on_quit (struct backend *backend)
 {
-	struct ws_context *self = &ctx->ws;
+	struct ws_context *self = (struct ws_context *) backend;
 	if (self->waiting_for_event && !self->e)
 		error_set (&self->e, "aborted by user");
 
@@ -2128,14 +2059,14 @@ backend_ws_on_quit (struct app_context *ctx)
 }
 
 static void
-backend_ws_destroy (struct app_context *ctx)
+backend_ws_destroy (struct backend *backend)
 {
-	struct ws_context *self = &ctx->ws;
+	struct ws_context *self = (struct ws_context *) backend;
 
 	// TODO: maybe attempt a graceful shutdown, but for that there should
 	//   probably be another backend method that runs an event loop
 	if (self->server_fd != -1)
-		backend_ws_close_connection (ctx);
+		backend_ws_close_connection (self);
 
 	free (self->endpoint);
 	str_vector_free (&self->extra_headers);
@@ -2152,16 +2083,58 @@ backend_ws_destroy (struct app_context *ctx)
 	str_free (&self->message_data);
 }
 
-static struct backend_iface g_backend_ws =
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+static struct backend_vtable backend_ws_vtable =
 {
-	.init       = backend_ws_init,
 	.add_header = backend_ws_add_header,
 	.make_call  = backend_ws_make_call,
 	.on_quit    = backend_ws_on_quit,
 	.destroy    = backend_ws_destroy,
 };
 
+static struct backend *
+backend_ws_new (struct app_context *ctx,
+	const char *endpoint, struct http_parser_url *url)
+{
+	struct ws_context *self = xcalloc (1, sizeof *self);
+	self->super.vtable = &backend_ws_vtable;
+	self->ctx = ctx;
+
+	ev_timer_init (&self->timeout_watcher, NULL, 0, 0);
+	self->server_fd = -1;
+	ev_io_init (&self->read_watcher, NULL, 0, 0);
+	http_parser_init (&self->hp, HTTP_RESPONSE);
+	str_init (&self->field);
+	str_init (&self->value);
+	str_map_init (&self->headers);
+	self->headers.key_xfrm = tolower_ascii_strxfrm;
+	self->headers.free = free;
+	ws_parser_init (&self->parser);
+	str_init (&self->message_data);
+	str_vector_init (&self->extra_headers);
+
+	self->endpoint = xstrdup (endpoint);
+	self->url = *url;
+
+	SSL_library_init ();
+	atexit (EVP_cleanup);
+	SSL_load_error_strings ();
+	atexit (ERR_free_strings);
+	return &self->super;
+}
+
 // --- cURL backend ------------------------------------------------------------
+
+struct curl_context
+{
+	struct backend super;               ///< Parent class
+	struct app_context *ctx;            ///< Application context
+
+	CURL *curl;                         ///< cURL handle
+	char curl_error[CURL_ERROR_SIZE];   ///< cURL error info buffer
+	struct curl_slist *headers;         ///< Headers
+};
 
 static size_t
 write_callback (char *ptr, size_t size, size_t nmemb, void *user_data)
@@ -2206,73 +2179,34 @@ end:
 }
 
 static void
-backend_curl_init (struct app_context *ctx,
-	const char *endpoint, struct http_parser_url *url)
+backend_curl_add_header (struct backend *backend, const char *header)
 {
-	(void) url;
-	curl_context_init (&ctx->curl);
-
-	CURL *curl;
-	if (!(ctx->curl.curl = curl = curl_easy_init ()))
-		exit_fatal ("cURL initialization failed");
-
-	ctx->curl.headers = NULL;
-	ctx->curl.headers = curl_slist_append
-		(ctx->curl.headers, "Content-Type: application/json");
-
-	if (curl_easy_setopt (curl, CURLOPT_POST,           1L)
-	 || curl_easy_setopt (curl, CURLOPT_NOPROGRESS,     1L)
-	 || curl_easy_setopt (curl, CURLOPT_ERRORBUFFER,    ctx->curl.curl_error)
-	 || curl_easy_setopt (curl, CURLOPT_HTTPHEADER,     ctx->curl.headers)
-	 || curl_easy_setopt (curl, CURLOPT_SSL_VERIFYPEER,
-			ctx->trust_all ? 0L : 1L)
-	 || curl_easy_setopt (curl, CURLOPT_SSL_VERIFYHOST,
-			ctx->trust_all ? 0L : 2L)
-	 || curl_easy_setopt (curl, CURLOPT_URL,            endpoint))
-		exit_fatal ("cURL setup failed");
-
-	if (!ctx->trust_all)
-	{
-		// TODO: try to resolve filenames relative to configuration directories
-		const char *ca_file = get_config_string
-			(ctx->config.root, "connection.tls_ca_file");
-		const char *ca_path = get_config_string
-			(ctx->config.root, "connection.tls_ca_path");
-		if ((ca_file && curl_easy_setopt (curl, CURLOPT_CAINFO, ca_file))
-		 || (ca_path && curl_easy_setopt (curl, CURLOPT_CAPATH, ca_path)))
-			exit_fatal ("cURL setup failed");
-	}
-}
-
-static void
-backend_curl_add_header (struct app_context *ctx, const char *header)
-{
-	ctx->curl.headers = curl_slist_append (ctx->curl.headers, header);
-	if (curl_easy_setopt (ctx->curl.curl,
-		CURLOPT_HTTPHEADER, ctx->curl.headers))
+	struct curl_context *self = (struct curl_context *) backend;
+	self->headers = curl_slist_append (self->headers, header);
+	if (curl_easy_setopt (self->curl, CURLOPT_HTTPHEADER, self->headers))
 		exit_fatal ("cURL setup failed");
 }
 
 static bool
-backend_curl_make_call (struct app_context *ctx,
+backend_curl_make_call (struct backend *backend,
 	const char *request, bool expect_content, struct str *buf, struct error **e)
 {
-	CURL *curl = ctx->curl.curl;
-	if (curl_easy_setopt (curl, CURLOPT_POSTFIELDS, request)
-	 || curl_easy_setopt (curl, CURLOPT_POSTFIELDSIZE_LARGE,
+	struct curl_context *self = (struct curl_context *) backend;
+	if (curl_easy_setopt (self->curl, CURLOPT_POSTFIELDS, request)
+	 || curl_easy_setopt (self->curl, CURLOPT_POSTFIELDSIZE_LARGE,
 		(curl_off_t) -1)
-	 || curl_easy_setopt (curl, CURLOPT_WRITEDATA, buf)
-	 || curl_easy_setopt (curl, CURLOPT_WRITEFUNCTION, write_callback))
+	 || curl_easy_setopt (self->curl, CURLOPT_WRITEDATA, buf)
+	 || curl_easy_setopt (self->curl, CURLOPT_WRITEFUNCTION, write_callback))
 		FAIL ("cURL setup failed");
 
 	CURLcode ret;
-	if ((ret = curl_easy_perform (curl)))
-		FAIL ("HTTP request failed: %s", ctx->curl.curl_error);
+	if ((ret = curl_easy_perform (self->curl)))
+		FAIL ("HTTP request failed: %s", self->curl_error);
 
 	long code;
 	char *type;
-	if (curl_easy_getinfo (curl, CURLINFO_RESPONSE_CODE, &code)
-	 || curl_easy_getinfo (curl, CURLINFO_CONTENT_TYPE, &type))
+	if (curl_easy_getinfo (self->curl, CURLINFO_RESPONSE_CODE, &code)
+	 || curl_easy_getinfo (self->curl, CURLINFO_CONTENT_TYPE, &type))
 		FAIL ("cURL info retrieval failed");
 
 	if (code != 200)
@@ -2288,27 +2222,69 @@ backend_curl_make_call (struct app_context *ctx,
 }
 
 static void
-backend_curl_destroy (struct app_context *ctx)
+backend_curl_destroy (struct backend *backend)
 {
-	curl_slist_free_all (ctx->curl.headers);
-	curl_easy_cleanup (ctx->curl.curl);
+	struct curl_context *self = (struct curl_context *) backend;
+	curl_slist_free_all (self->headers);
+	curl_easy_cleanup (self->curl);
 }
 
-static struct backend_iface g_backend_curl =
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+static struct backend_vtable backend_curl_vtable =
 {
-	.init       = backend_curl_init,
 	.add_header = backend_curl_add_header,
 	.make_call  = backend_curl_make_call,
 	.destroy    = backend_curl_destroy,
 };
+
+static struct backend *
+backend_curl_new (struct app_context *ctx, const char *endpoint)
+{
+	struct curl_context *self = xcalloc (1, sizeof *self);
+	self->super.vtable = &backend_curl_vtable;
+	self->ctx = ctx;
+
+	CURL *curl;
+	if (!(self->curl = curl = curl_easy_init ()))
+		exit_fatal ("cURL initialization failed");
+
+	self->headers = NULL;
+	self->headers = curl_slist_append
+		(self->headers, "Content-Type: application/json");
+
+	if (curl_easy_setopt (curl, CURLOPT_POST,           1L)
+	 || curl_easy_setopt (curl, CURLOPT_NOPROGRESS,     1L)
+	 || curl_easy_setopt (curl, CURLOPT_ERRORBUFFER,    self->curl_error)
+	 || curl_easy_setopt (curl, CURLOPT_HTTPHEADER,     self->headers)
+	 || curl_easy_setopt (curl, CURLOPT_SSL_VERIFYPEER,
+			self->ctx->trust_all ? 0L : 1L)
+	 || curl_easy_setopt (curl, CURLOPT_SSL_VERIFYHOST,
+			self->ctx->trust_all ? 0L : 2L)
+	 || curl_easy_setopt (curl, CURLOPT_URL,            endpoint))
+		exit_fatal ("cURL setup failed");
+
+	if (!self->ctx->trust_all)
+	{
+		// TODO: try to resolve filenames relative to configuration directories
+		const char *ca_file = get_config_string
+			(self->ctx->config.root, "connection.tls_ca_file");
+		const char *ca_path = get_config_string
+			(self->ctx->config.root, "connection.tls_ca_path");
+		if ((ca_file && curl_easy_setopt (curl, CURLOPT_CAINFO, ca_file))
+		 || (ca_path && curl_easy_setopt (curl, CURLOPT_CAPATH, ca_path)))
+			exit_fatal ("cURL setup failed");
+	}
+	return &self->super;
+}
 
 // --- Main program ------------------------------------------------------------
 
 static void
 quit (struct app_context *ctx)
 {
-	if (ctx->backend->on_quit)
-		ctx->backend->on_quit (ctx);
+	if (ctx->backend->vtable->on_quit)
+		ctx->backend->vtable->on_quit (ctx->backend);
 
 	ev_break (EV_DEFAULT_ EVBREAK_ALL);
 	ctx->input->vtable->hide (ctx->input);
@@ -2462,7 +2438,8 @@ make_json_rpc_call (struct app_context *ctx,
 	str_init (&buf);
 
 	struct error *e = NULL;
-	if (!ctx->backend->make_call (ctx, req_utf8, id != NULL, &buf, &e))
+	if (!ctx->backend->vtable->make_call
+		(ctx->backend, req_utf8, id != NULL, &buf, &e))
 	{
 		print_error ("%s", e->message);
 		error_free (e);
@@ -2734,27 +2711,27 @@ main (int argc, char *argv[])
 		url.field_data[UF_SCHEMA].off,
 		url.field_data[UF_SCHEMA].len);
 
+	// TODO: try to avoid the need to pass application context to backends
 	if (!strcasecmp_ascii (url_schema, "http")
 		|| !strcasecmp_ascii (url_schema, "https"))
-		g_ctx.backend = &g_backend_curl;
+		g_ctx.backend = backend_curl_new (&g_ctx, endpoint);
 	else if (!strcasecmp_ascii (url_schema, "ws")
 		|| !strcasecmp_ascii (url_schema, "wss"))
 	{
 		print_warning ("WebSocket support is experimental"
 			" and most likely completely broken");
-		g_ctx.backend = &g_backend_ws;
+		g_ctx.backend = backend_ws_new (&g_ctx, endpoint, &url);
 	}
 	else
 		exit_fatal ("unsupported protocol");
-
 	free (url_schema);
 
-	g_ctx.backend->init (&g_ctx, endpoint, &url);
 	if (origin)
 	{
 		origin = xstrdup_printf ("Origin: %s", origin);
-		g_ctx.backend->add_header (&g_ctx, origin);
+		g_ctx.backend->vtable->add_header (g_ctx.backend, origin);
 	}
+	free (origin);
 
 	// We only need to convert to and from the terminal encoding
 	setlocale (LC_CTYPE, "");
@@ -2849,13 +2826,13 @@ main (int argc, char *argv[])
 	free (dir);
 	free (history_path);
 
+	g_ctx.backend->vtable->destroy (g_ctx.backend);
+	g_ctx.input->vtable->destroy (g_ctx.input);
+
 	iconv_close (g_ctx.term_from_utf8);
 	iconv_close (g_ctx.term_to_utf8);
-	g_ctx.backend->destroy (&g_ctx);
-	free (origin);
 	config_free (&g_ctx.config);
 	free_terminal ();
-	g_ctx.input->vtable->destroy (g_ctx.input);
 	ev_loop_destroy (loop);
 	return EXIT_SUCCESS;
 }
