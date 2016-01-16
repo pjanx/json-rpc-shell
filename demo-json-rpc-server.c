@@ -44,9 +44,7 @@
 
 #include "http-parser/http_parser.h"
 
-// --- Extensions to liberty ---------------------------------------------------
-
-// Currently in sync, nothing to be moved.
+enum { PIPE_READ, PIPE_WRITE };
 
 // --- libev helpers -----------------------------------------------------------
 
@@ -2430,20 +2428,20 @@ setup_listen_fds (struct server_context *ctx, struct error **e)
 	return true;
 }
 
-static bool
-lock_pid_file (struct server_context *ctx, struct error **e)
+static int
+lock_pid_file (const char *path, struct error **e)
 {
-	const char *path = str_map_find (&ctx->config, "pid_file");
-	if (!path)
-		return true;
-
+	// When using XDG_RUNTIME_DIR, the file needs to either have its
+	// access time bumped every 6 hours, or have the sticky bit set
 	int fd = open (path, O_RDWR | O_CREAT,
-		S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH /* 644 */);
+		S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH /* 644 */ | S_ISVTX /* sticky */);
 	if (fd < 0)
 	{
 		error_set (e, "can't open `%s': %s", path, strerror (errno));
-		return false;
+		return -1;
 	}
+
+	set_cloexec (fd);
 
 	struct flock lock =
 	{
@@ -2455,7 +2453,8 @@ lock_pid_file (struct server_context *ctx, struct error **e)
 	if (fcntl (fd, F_SETLK, &lock))
 	{
 		error_set (e, "can't lock `%s': %s", path, strerror (errno));
-		return false;
+		xclose (fd);
+		return -1;
 	}
 
 	struct str pid;
@@ -2466,13 +2465,27 @@ lock_pid_file (struct server_context *ctx, struct error **e)
 	 || write (fd, pid.str, pid.len) != (ssize_t) pid.len)
 	{
 		error_set (e, "can't write to `%s': %s", path, strerror (errno));
-		return false;
+		xclose (fd);
+		return -1;
 	}
 	str_free (&pid);
 
 	// Intentionally not closing the file descriptor; it must stay alive
 	// for the entire life of the application
-	return true;
+	return fd;
+}
+
+static bool
+app_lock_pid_file (struct server_context *ctx, struct error **e)
+{
+	const char *path = str_map_find (&ctx->config, "pid_file");
+	if (!path)
+		return true;
+
+	char *resolved = resolve_filename (path, resolve_relative_runtime_filename);
+	bool result = lock_pid_file (resolved, e) != -1;
+	free (resolved);
+	return result;
 }
 
 // --- Tests -------------------------------------------------------------------
@@ -2517,18 +2530,34 @@ on_termination_signal (EV_P_ ev_signal *handle, int revents)
 }
 
 static void
-daemonize (void)
+daemonize (struct server_context *ctx)
 {
 	print_status ("daemonizing...");
 
 	if (chdir ("/"))
 		exit_fatal ("%s: %s", "chdir", strerror (errno));
 
+	// Because of systemd, we need to exit the parent process _after_ writing
+	// a PID file, otherwise our grandchild would receive a SIGTERM
+	int sync_pipe[2];
+	if (pipe (sync_pipe))
+		exit_fatal ("%s: %s", "pipe", strerror (errno));
+
 	pid_t pid;
 	if ((pid = fork ()) < 0)
 		exit_fatal ("%s: %s", "fork", strerror (errno));
 	else if (pid)
+	{
+		// Wait until all write ends of the pipe are closed, which can mean
+		// either success or failure, we don't need to care
+		xclose (sync_pipe[PIPE_WRITE]);
+
+		char dummy;
+		if (read (sync_pipe[PIPE_READ], &dummy, 1) < 0)
+			exit_fatal ("%s: %s", "read", strerror (errno));
+
 		exit (EXIT_SUCCESS);
+	}
 
 	setsid ();
 	signal (SIGHUP, SIG_IGN);
@@ -2540,6 +2569,15 @@ daemonize (void)
 
 	openlog (PROGRAM_NAME, LOG_NDELAY | LOG_NOWAIT | LOG_PID, 0);
 	g_log_message_real = log_message_syslog;
+
+	// Write the PID file (if so configured) and get rid of the pipe, so that
+	// the read() in our grandparent finally returns zero (no write ends)
+	struct error *e = NULL;
+	if (!app_lock_pid_file (ctx, &e))
+		exit_fatal ("%s", e->message);
+
+	xclose (sync_pipe[PIPE_READ]);
+	xclose (sync_pipe[PIPE_WRITE]);
 
 	// XXX: we may close our own descriptors this way, crippling ourselves;
 	//   there is no real guarantee that we will start with all three
@@ -2643,7 +2681,6 @@ main (int argc, char *argv[])
 	LIST_PREPEND (ctx.handlers, &g_request_handler_json_rpc);
 
 	if (!parse_config (&ctx, &e)
-	 || !lock_pid_file (&ctx, &e)
 	 || !setup_listen_fds (&ctx, &e))
 	{
 		print_error ("%s", e->message);
@@ -2652,7 +2689,9 @@ main (int argc, char *argv[])
 	}
 
 	if (!g_debug_mode)
-		daemonize ();
+		daemonize (&ctx);
+	else if (!app_lock_pid_file (&ctx, &e))
+		exit_fatal ("%s", e->message);
 
 	ev_run (loop, 0);
 	ev_loop_destroy (loop);
