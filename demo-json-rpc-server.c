@@ -1167,7 +1167,7 @@ struct server_context
 
 static void initiate_quit (struct server_context *self);
 static void try_finish_quit (struct server_context *self);
-static void on_quit_timeout (EV_P_ ev_watcher *watcher, int revents);
+static void on_quit_timeout (EV_P_ ev_timer *watcher, int revents);
 static void close_listeners (struct server_context *self);
 
 static void
@@ -2166,7 +2166,7 @@ try_finish_quit (struct server_context *self)
 }
 
 static void
-on_quit_timeout (EV_P_ ev_watcher *watcher, int revents)
+on_quit_timeout (EV_P_ ev_timer *watcher, int revents)
 {
 	struct server_context *self = watcher->data;
 	(void) loop;
