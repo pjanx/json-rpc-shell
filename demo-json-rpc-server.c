@@ -1136,7 +1136,7 @@ ws_handler_push (struct ws_handler *self, const void *data, size_t len)
 
 // --- Server ------------------------------------------------------------------
 
-static struct config_item g_config_table[] =
+static struct simple_config_item g_config_table[] =
 {
 	{ "bind_host",       NULL,              "Address of the server"          },
 	{ "port_fastcgi",    "9000",            "Port to bind for FastCGI"       },
@@ -1176,7 +1176,7 @@ server_context_init (struct server_context *self)
 	memset (self, 0, sizeof *self);
 
 	str_map_init (&self->config);
-	load_config_defaults (&self->config, g_config_table);
+	simple_config_load_defaults (&self->config, g_config_table);
 	ev_timer_init (&self->quit_timeout_watcher, on_quit_timeout, 0., 0.);
 	self->quit_timeout_watcher.data = self;
 }
@@ -1583,7 +1583,7 @@ canonicalize_url_path (const char *path)
 	// XXX: this strips any slashes at the end
 	struct str_vector v;
 	str_vector_init (&v);
-	split_str_ignore_empty (path, '/', &v);
+	cstr_split_ignore_empty (path, '/', &v);
 
 	struct str_vector canonical;
 	str_vector_init (&canonical);
@@ -2383,7 +2383,7 @@ get_ports_from_config (struct server_context *ctx,
 {
 	const char *ports;
 	if ((ports = str_map_find (&ctx->config, key)))
-		split_str_ignore_empty (ports, ',', out);
+		cstr_split_ignore_empty (ports, ',', out);
 }
 
 static bool
@@ -2588,7 +2588,7 @@ parse_program_arguments (int argc, char **argv)
 		printf (PROGRAM_NAME " " PROGRAM_VERSION "\n");
 		exit (EXIT_SUCCESS);
 	case 'w':
-		call_write_default_config (optarg, g_config_table);
+		call_simple_config_write_default (optarg, g_config_table);
 		exit (EXIT_SUCCESS);
 	default:
 		print_error ("wrong options");
@@ -2618,7 +2618,7 @@ main (int argc, char *argv[])
 	server_context_init (&ctx);
 
 	struct error *e = NULL;
-	if (!read_config_file (&ctx.config, &e))
+	if (!simple_config_update_from_file (&ctx.config, &e))
 	{
 		print_error ("error loading configuration: %s", e->message);
 		error_free (e);
