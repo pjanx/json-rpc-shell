@@ -49,10 +49,10 @@ enum { PIPE_READ, PIPE_WRITE };
 // --- libev helpers -----------------------------------------------------------
 
 static bool
-flush_queue (write_queue_t *queue, ev_io *watcher)
+flush_queue (struct write_queue *queue, ev_io *watcher)
 {
 	struct iovec vec[queue->len], *vec_iter = vec;
-	for (write_req_t *iter = queue->head; iter; iter = iter->next)
+	LIST_FOR_EACH (struct write_req, iter, queue->head)
 		*vec_iter++ = iter->data;
 
 	ssize_t written;
@@ -1755,7 +1755,7 @@ struct client
 	struct server_context *ctx;         ///< Server context
 
 	int socket_fd;                      ///< The TCP socket
-	write_queue_t write_queue;          ///< Write queue
+	struct write_queue write_queue;     ///< Write queue
 
 	ev_io read_watcher;                 ///< The socket can be read from
 	ev_io write_watcher;                ///< The socket can be written to
@@ -1785,7 +1785,7 @@ client_free (struct client *self)
 static void
 client_write (struct client *self, const void *data, size_t len)
 {
-	write_req_t *req = xcalloc (1, sizeof *req);
+	struct write_req *req = xcalloc (1, sizeof *req);
 	req->data.iov_base = memcpy (xmalloc (len), data, len);
 	req->data.iov_len = len;
 
@@ -2432,53 +2432,6 @@ setup_listen_fds (struct server_context *ctx, struct error **e)
 		return false;
 	}
 	return true;
-}
-
-static int
-lock_pid_file (const char *path, struct error **e)
-{
-	// When using XDG_RUNTIME_DIR, the file needs to either have its
-	// access time bumped every 6 hours, or have the sticky bit set
-	int fd = open (path, O_RDWR | O_CREAT,
-		S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH /* 644 */ | S_ISVTX /* sticky */);
-	if (fd < 0)
-	{
-		error_set (e, "can't open `%s': %s", path, strerror (errno));
-		return -1;
-	}
-
-	set_cloexec (fd);
-
-	struct flock lock =
-	{
-		.l_type = F_WRLCK,
-		.l_start = 0,
-		.l_whence = SEEK_SET,
-		.l_len = 0,
-	};
-	if (fcntl (fd, F_SETLK, &lock))
-	{
-		error_set (e, "can't lock `%s': %s", path, strerror (errno));
-		xclose (fd);
-		return -1;
-	}
-
-	struct str pid;
-	str_init (&pid);
-	str_append_printf (&pid, "%ld", (long) getpid ());
-
-	if (ftruncate (fd, 0)
-	 || write (fd, pid.str, pid.len) != (ssize_t) pid.len)
-	{
-		error_set (e, "can't write to `%s': %s", path, strerror (errno));
-		xclose (fd);
-		return -1;
-	}
-	str_free (&pid);
-
-	// Intentionally not closing the file descriptor; it must stay alive
-	// for the entire life of the application
-	return fd;
 }
 
 static bool
