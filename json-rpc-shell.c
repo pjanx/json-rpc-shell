@@ -3049,6 +3049,11 @@ main (int argc, char *argv[])
 	char *endpoint = NULL;
 	parse_program_arguments (&g_ctx, argc, argv, &origin, &endpoint);
 
+	g_ctx.input = input_new ();
+	g_ctx.input->user_data = &g_ctx;
+	g_ctx.input->on_input = process_input;
+	g_ctx.input->on_run_editor = run_editor;
+
 	init_colors (&g_ctx);
 	load_configuration (&g_ctx);
 
@@ -3109,11 +3114,6 @@ main (int argc, char *argv[])
 
 		data_home = xstrdup_printf ("%s/.local/share", home);
 	}
-
-	g_ctx.input = input_new ();
-	g_ctx.input->user_data = &g_ctx;
-	g_ctx.input->on_input = process_input;
-	g_ctx.input->on_run_editor = run_editor;
 
 	char *history_path =
 		xstrdup_printf ("%s/" PROGRAM_NAME "/history", data_home);
