@@ -7,6 +7,16 @@ json-rpc-shell
 This software has been created as a replacement for the following shell, which
 is written in Java: http://software.dzhuvinov.com/json-rpc-2.0-shell.html
 
+Features
+--------
+In addition to most of the features provided by Vladimir Dzhuvinov's shell
+you get the following niceties:
+
+ - configurable JSON syntax highlight, which with prettyprinting turned on
+   helps you make sense of the results significantly
+ - ability to pipe output through a shell command, so that you can view the
+   results in your favourite editor or redirect them to a file
+
 Supported transports
 --------------------
  - HTTP
