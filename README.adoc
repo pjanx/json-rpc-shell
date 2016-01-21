@@ -16,6 +16,7 @@ you get the following niceties:
    helps you make sense of the results significantly
  - ability to pipe output through a shell command, so that you can view the
    results in your favourite editor or redirect them to a file
+ - ability to edit the input line in your favourite editor as well with Alt+E
 
 Supported transports
 --------------------
