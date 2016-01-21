@@ -2706,6 +2706,22 @@ quit (struct app_context *ctx)
 	ctx->input->vtable->hide (ctx->input);
 }
 
+static void
+suspend_terminal (struct app_context *ctx)
+{
+	ctx->input->vtable->hide (ctx->input);
+	ev_io_stop (EV_DEFAULT_ &ctx->tty_watcher);
+	ctx->input->vtable->prepare (ctx->input, false);
+}
+
+static void
+resume_terminal (struct app_context *ctx)
+{
+	ctx->input->vtable->prepare (ctx->input, true);
+	ev_io_start (EV_DEFAULT_ &ctx->tty_watcher);
+	ctx->input->vtable->show (ctx->input);
+}
+
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 #define PARSE_FAIL(...)                                                        \
@@ -2714,8 +2730,28 @@ quit (struct app_context *ctx)
 		goto fail;                                                             \
 	BLOCK_END
 
+// XXX: should probably rather defer this action and use spawn_helper_child()
+static void
+display_via_pipeline (struct app_context *ctx,
+	const char *s, const char *pipeline)
+{
+	suspend_terminal (ctx);
+
+	errno = 0;
+	FILE *fp = popen (pipeline, "w");
+	if (fp)
+	{
+		fputs (s, fp);
+		pclose (fp);
+	}
+	if (errno)
+		print_error ("pipeline failed: %s", strerror (errno));
+
+	resume_terminal (ctx);
+}
+
 static bool
-parse_response (struct app_context *ctx, struct str *buf)
+parse_response (struct app_context *ctx, struct str *buf, const char *pipeline)
 {
 	json_error_t e;
 	json_t *response;
@@ -2803,6 +2839,8 @@ parse_response (struct app_context *ctx, struct str *buf)
 
 		if (!s)
 			print_error ("character conversion failed for `%s'", "result");
+		else if (pipeline)
+			display_via_pipeline (ctx, s, pipeline);
 		else
 		{
 			json_highlight (ctx, s, stdout);
@@ -2832,7 +2870,7 @@ is_valid_json_rpc_params (json_t *v)
 
 static void
 make_json_rpc_call (struct app_context *ctx,
-	const char *method, json_t *id, json_t *params)
+	const char *method, json_t *id, json_t *params, const char *pipeline)
 {
 	json_t *request = json_object ();
 	json_object_set_new (request, "jsonrpc", json_string ("2.0"));
@@ -2867,7 +2905,7 @@ make_json_rpc_call (struct app_context *ctx,
 
 	bool success = false;
 	if (id)
-		success = parse_response (ctx, &buf);
+		success = parse_response (ctx, &buf, pipeline);
 	else
 	{
 		printf ("[Notification]\n");
@@ -2933,6 +2971,7 @@ process_input (char *user_input, void *user_data)
 	size_t args_len = 0;
 	json_t *args[2] = { NULL, NULL }, *id = NULL, *params = NULL;
 
+	char *pipeline = NULL;
 	while (true)
 	{
 		// Jansson is too stupid to just tell us that there was nothing;
@@ -2941,6 +2980,12 @@ process_input (char *user_input, void *user_data)
 			p++;
 		if (!*p)
 			break;
+
+		if (*p == '|')
+		{
+			pipeline = xstrdup (++p);
+			break;
+		}
 
 		if (args_len == N_ELEMENTS (args))
 		{
@@ -2981,9 +3026,11 @@ process_input (char *user_input, void *user_data)
 	if (!id && ctx->auto_id)
 		id = json_integer (ctx->next_id++);
 
-	make_json_rpc_call (ctx, method, id, params);
+	make_json_rpc_call (ctx, method, id, params, pipeline);
 
 fail_parse:
+	free (pipeline);
+
 	if (id)      json_decref (id);
 	if (params)  json_decref (params);
 
@@ -2997,24 +3044,6 @@ fail:
 
 // The ability to use an external editor on the input line has been shamelessly
 // copypasted from degesch with minor changes only.
-
-static void
-suspend_terminal (struct app_context *ctx)
-{
-	ctx->input->vtable->hide (ctx->input);
-	ev_io_stop (EV_DEFAULT_ &ctx->tty_watcher);
-	ctx->input->vtable->prepare (ctx->input, false);
-}
-
-static void
-resume_terminal (struct app_context *ctx)
-{
-	ctx->input->vtable->prepare (ctx->input, true);
-	ev_io_start (EV_DEFAULT_ &ctx->tty_watcher);
-	ctx->input->vtable->show (ctx->input);
-}
-
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 /// This differs from the non-unique version in that we expect the filename
 /// to be something like a pattern for mkstemp(), so the resulting path can
