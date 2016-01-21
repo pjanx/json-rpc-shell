@@ -1,7 +1,7 @@
 /*
  * json-rpc-shell.c: simple JSON-RPC 2.0 shell
  *
- * Copyright (c) 2014 - 2015, Přemysl Janouch <p.janouch@gmail.com>
+ * Copyright (c) 2014 - 2016, Přemysl Janouch <p.janouch@gmail.com>
  * All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
@@ -28,7 +28,12 @@
 	XX( WARNING,     "warning",     "Terminal attrs for warnings"         )    \
 	XX( ERROR,       "error",       "Terminal attrs for errors"           )    \
 	XX( INCOMING,    "incoming",    "Terminal attrs for incoming traffic" )    \
-	XX( OUTGOING,    "outgoing",    "Terminal attrs for outgoing traffic" )
+	XX( OUTGOING,    "outgoing",    "Terminal attrs for outgoing traffic" )    \
+	XX( JSON_FIELD,  "json_field",  "Terminal attrs for JSON field names" )    \
+	XX( JSON_NULL,   "json_null",   "Terminal attrs for JSON null values" )    \
+	XX( JSON_BOOL,   "json_bool",   "Terminal attrs for JSON booleans"    )    \
+	XX( JSON_NUMBER, "json_number", "Terminal attrs for JSON numbers"     )    \
+	XX( JSON_STRING, "json_string", "Terminal attrs for JSON strings"     )
 
 enum
 {
@@ -1171,21 +1176,31 @@ init_colors (struct app_context *ctx)
 	// Use escape sequences from terminfo if possible, and SGR as a fallback
 	if (init_terminal ())
 	{
-		INIT_ATTR (PROMPT,   enter_bold_mode);
-		INIT_ATTR (RESET,    exit_attribute_mode);
-		INIT_ATTR (WARNING,  g_terminal.color_set[COLOR_YELLOW]);
-		INIT_ATTR (ERROR,    g_terminal.color_set[COLOR_RED]);
-		INIT_ATTR (INCOMING, "");
-		INIT_ATTR (OUTGOING, "");
+		INIT_ATTR (PROMPT,      enter_bold_mode);
+		INIT_ATTR (RESET,       exit_attribute_mode);
+		INIT_ATTR (WARNING,     g_terminal.color_set[COLOR_YELLOW]);
+		INIT_ATTR (ERROR,       g_terminal.color_set[COLOR_RED]);
+		INIT_ATTR (INCOMING,    "");
+		INIT_ATTR (OUTGOING,    "");
+		INIT_ATTR (JSON_FIELD,  enter_bold_mode);
+		INIT_ATTR (JSON_NULL,   g_terminal.color_set[COLOR_CYAN]);
+		INIT_ATTR (JSON_BOOL,   g_terminal.color_set[COLOR_RED]);
+		INIT_ATTR (JSON_NUMBER, g_terminal.color_set[COLOR_MAGENTA]);
+		INIT_ATTR (JSON_STRING, g_terminal.color_set[COLOR_BLUE]);
 	}
 	else
 	{
-		INIT_ATTR (PROMPT,   "\x1b[1m");
-		INIT_ATTR (RESET,    "\x1b[0m");
-		INIT_ATTR (WARNING,  "\x1b[33m");
-		INIT_ATTR (ERROR,    "\x1b[31m");
-		INIT_ATTR (INCOMING, "");
-		INIT_ATTR (OUTGOING, "");
+		INIT_ATTR (PROMPT,      "\x1b[1m");
+		INIT_ATTR (RESET,       "\x1b[0m");
+		INIT_ATTR (WARNING,     "\x1b[33m");
+		INIT_ATTR (ERROR,       "\x1b[31m");
+		INIT_ATTR (INCOMING,    "");
+		INIT_ATTR (OUTGOING,    "");
+		INIT_ATTR (JSON_FIELD,  "\x1b[1m");
+		INIT_ATTR (JSON_NULL,   "\x1b[36m");
+		INIT_ATTR (JSON_BOOL,   "\x1b[31m");
+		INIT_ATTR (JSON_NUMBER, "\x1b[35m");
+		INIT_ATTR (JSON_STRING, "\x1b[32m");
 	}
 
 #undef INIT_ATTR
@@ -2387,6 +2402,298 @@ backend_curl_new (struct app_context *ctx, const char *endpoint)
 	return &self->super;
 }
 
+// --- JSON tokenizer ----------------------------------------------------------
+
+// A dumb JSON tokenizer intended strictly just for syntax highlighting
+//
+// TODO: return also escape squences as a special token class (-> state)
+
+enum jtoken
+{
+	JTOKEN_EOF,                         ///< End of input
+	JTOKEN_ERROR,                       ///< EOF or error
+
+	JTOKEN_WHITESPACE,                  ///< Whitespace
+
+	JTOKEN_LBRACKET,                    ///< Left bracket
+	JTOKEN_RBRACKET,                    ///< Right bracket
+	JTOKEN_LBRACE,                      ///< Left curly bracket
+	JTOKEN_RBRACE,                      ///< Right curly bracket
+	JTOKEN_COLON,                       ///< Colon
+	JTOKEN_COMMA,                       ///< Comma
+
+	JTOKEN_NULL,                        ///< null
+	JTOKEN_BOOLEAN,                     ///< true, false
+	JTOKEN_NUMBER,                      ///< Number
+	JTOKEN_STRING                       ///< String
+};
+
+struct jtokenizer
+{
+	const char *p;                      ///< Current position in input
+	size_t len;                         ///< How many bytes of input are left
+	struct str chunk;                   ///< Parsed chunk
+};
+
+static void
+jtokenizer_init (struct jtokenizer *self, const char *p, size_t len)
+{
+	self->p = p;
+	self->len = len;
+	str_init (&self->chunk);
+}
+
+static void
+jtokenizer_free (struct jtokenizer *self)
+{
+	str_free (&self->chunk);
+}
+
+static void
+jtokenizer_advance (struct jtokenizer *self, size_t n)
+{
+	str_append_data (&self->chunk, self->p, n);
+	self->p += n;
+	self->len -= n;
+}
+
+static int
+jtokenizer_accept (struct jtokenizer *self, const char *chars)
+{
+	if (!self->len || !strchr (chars, *self->p))
+		return false;
+
+	jtokenizer_advance (self, 1);
+	return true;
+}
+
+static bool
+jtokenizer_ws (struct jtokenizer *self)
+{
+	size_t len = 0;
+	while (jtokenizer_accept (self, "\t\r\n "))
+		len++;
+	return len != 0;
+}
+
+static bool
+jtokenizer_word (struct jtokenizer *self, const char *word)
+{
+	size_t len = strlen (word);
+	if (self->len < len || memcmp (self->p, word, len))
+		return false;
+
+	jtokenizer_advance (self, len);
+	return true;
+}
+
+static bool
+jtokenizer_escape_sequence (struct jtokenizer *self)
+{
+	if (!self->len)
+		return false;
+
+	if (jtokenizer_accept (self, "u"))
+	{
+		for (int i = 0; i < 4; i++)
+			if (!jtokenizer_accept (self, "0123456789abcdefABCDEF"))
+				return false;
+		return true;
+	}
+	return jtokenizer_accept (self, "\"\\/bfnrt");
+}
+
+static bool
+jtokenizer_string (struct jtokenizer *self)
+{
+	while (self->len)
+	{
+		unsigned char c = *self->p;
+		jtokenizer_advance (self, 1);
+
+		if (c == '"')
+			return true;
+		if (c == '\\' && !jtokenizer_escape_sequence (self))
+			return false;
+	}
+	return false;
+}
+
+static bool
+jtokenizer_integer (struct jtokenizer *self)
+{
+	size_t len = 0;
+	while (jtokenizer_accept (self, "0123456789"))
+		len++;
+	return len != 0;
+}
+
+static bool
+jtokenizer_number (struct jtokenizer *self)
+{
+	(void) jtokenizer_accept (self, "-");
+
+	if (!self->len)
+		return false;
+	if (!jtokenizer_accept (self, "0")
+	 && !jtokenizer_integer (self))
+		return false;
+
+	if (jtokenizer_accept (self, ".")
+	 && !jtokenizer_integer (self))
+		return false;
+	if (jtokenizer_accept (self, "eE"))
+	{
+		(void) jtokenizer_accept (self, "+-");
+		if (!jtokenizer_integer (self))
+			return false;
+	}
+	return true;
+}
+
+static enum jtoken
+jtokenizer_next (struct jtokenizer *self)
+{
+	str_reset (&self->chunk);
+
+	if (!self->len)                       return JTOKEN_EOF;
+	if (jtokenizer_ws (self))             return JTOKEN_WHITESPACE;
+
+	if (jtokenizer_accept (self, "["))    return JTOKEN_LBRACKET;
+	if (jtokenizer_accept (self, "]"))    return JTOKEN_RBRACKET;
+	if (jtokenizer_accept (self, "{"))    return JTOKEN_LBRACE;
+	if (jtokenizer_accept (self, "}"))    return JTOKEN_RBRACE;
+
+	if (jtokenizer_accept (self, ":"))    return JTOKEN_COLON;
+	if (jtokenizer_accept (self, ","))    return JTOKEN_COMMA;
+
+	if (jtokenizer_word (self, "null"))   return JTOKEN_NULL;
+	if (jtokenizer_word (self, "true")
+	 || jtokenizer_word (self, "false"))  return JTOKEN_BOOLEAN;
+
+	if (jtokenizer_accept (self, "\""))
+	{
+		if (jtokenizer_string (self))     return JTOKEN_STRING;
+	}
+	else if (jtokenizer_number (self))    return JTOKEN_NUMBER;
+
+	jtokenizer_advance (self, self->len);
+	return JTOKEN_ERROR;
+}
+
+// --- JSON highlighter --------------------------------------------------------
+
+// Currently errors in parsing only mean that the rest doesn't get highlighted
+
+struct json_highlight
+{
+	struct app_context *ctx;            ///< Application context
+	struct jtokenizer tokenizer;        ///< Tokenizer
+	FILE *output;                       ///< Output handle
+};
+
+static void
+json_highlight_print (struct json_highlight *self, int attr)
+{
+	print_attributed (self->ctx, self->output, attr,
+		"%s", self->tokenizer.chunk.str);
+}
+
+static void json_highlight_value
+	(struct json_highlight *self, enum jtoken token);
+
+static void
+json_highlight_object (struct json_highlight *self)
+{
+	// Distinguishing field names from regular string values in objects
+	bool in_field_name = true;
+
+	enum jtoken token;
+	while ((token = jtokenizer_next (&self->tokenizer)))
+	switch (token)
+	{
+	case JTOKEN_COLON:
+		in_field_name = false;
+		json_highlight_value (self, token);
+		break;
+	case JTOKEN_COMMA:
+		in_field_name = true;
+		json_highlight_value (self, token);
+		break;
+	case JTOKEN_STRING:
+		if (in_field_name)
+			json_highlight_print (self, ATTR_JSON_FIELD);
+		else
+			json_highlight_print (self, ATTR_JSON_STRING);
+		break;
+	case JTOKEN_RBRACE:
+		json_highlight_value (self, token);
+		return;
+	default:
+		json_highlight_value (self, token);
+	}
+}
+
+static void
+json_highlight_array (struct json_highlight *self)
+{
+	enum jtoken token;
+	while ((token = jtokenizer_next (&self->tokenizer)))
+	switch (token)
+	{
+	case JTOKEN_RBRACKET:
+		json_highlight_value (self, token);
+		return;
+	default:
+		json_highlight_value (self, token);
+	}
+}
+
+static void
+json_highlight_value (struct json_highlight *self, enum jtoken token)
+{
+	switch (token)
+	{
+	case JTOKEN_LBRACE:
+		json_highlight_print (self, ATTR_INCOMING);
+		json_highlight_object (self);
+		break;
+	case JTOKEN_LBRACKET:
+		json_highlight_print (self, ATTR_INCOMING);
+		json_highlight_array (self);
+		break;
+	case JTOKEN_NULL:
+		json_highlight_print (self, ATTR_JSON_NULL);
+		break;
+	case JTOKEN_BOOLEAN:
+		json_highlight_print (self, ATTR_JSON_BOOL);
+		break;
+	case JTOKEN_NUMBER:
+		json_highlight_print (self, ATTR_JSON_NUMBER);
+		break;
+	case JTOKEN_STRING:
+		json_highlight_print (self, ATTR_JSON_STRING);
+		break;
+	default:
+		json_highlight_print (self, ATTR_INCOMING);
+	}
+}
+
+static void
+json_highlight (struct app_context *ctx, const char *s, FILE *output)
+{
+	struct json_highlight self = { .ctx = ctx, .output = output };
+	jtokenizer_init (&self.tokenizer, s, strlen (s));
+
+	// There should be at maximum one value in the input however,
+	// but let's just keep on going and process it all
+	enum jtoken token;
+	while ((token = jtokenizer_next (&self.tokenizer)))
+		json_highlight_value (&self, token);
+
+	jtokenizer_free (&self.tokenizer);
+}
+
 // --- Main program ------------------------------------------------------------
 
 static void
@@ -2497,7 +2804,10 @@ parse_response (struct app_context *ctx, struct str *buf)
 		if (!s)
 			print_error ("character conversion failed for `%s'", "result");
 		else
-			print_attributed (ctx, stdout, ATTR_INCOMING, "%s\n", s);
+		{
+			json_highlight (ctx, s, stdout);
+			fputc ('\n', stdout);
+		}
 		free (s);
 	}
 
