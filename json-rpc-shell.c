@@ -2690,6 +2690,7 @@ json_highlight (struct app_context *ctx, const char *s, FILE *output)
 	enum jtoken token;
 	while ((token = jtokenizer_next (&self.tokenizer)))
 		json_highlight_value (&self, token);
+	fflush (output);
 
 	jtokenizer_free (&self.tokenizer);
 }
@@ -2887,7 +2888,10 @@ make_json_rpc_call (struct app_context *ctx,
 		if (!req_term)
 			print_error ("%s: %s", "verbose", "character conversion failed");
 		else
-			print_attributed (ctx, stdout, ATTR_OUTGOING, "%s\n", req_term);
+		{
+			print_attributed (ctx, stdout, ATTR_OUTGOING, "%s", req_term);
+			fputs ("\n", stdout);
+		}
 		free (req_term);
 	}
 
