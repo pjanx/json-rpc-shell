@@ -36,8 +36,17 @@ client waits for a message from the server in response.
 There's no support so far for any protocol extensions, nor for specifying
 the higher-level protocol (the "Sec-Ws-Protocol" HTTP field).
 
-Building and Running
---------------------
+Packages
+--------
+Regular releases are sporadic.  git master should be stable enough.  You can get
+a package with the latest development version from Archlinux's AUR, or from
+openSUSE Build Service for the rest of mainstream distributions.  Consult the
+list of repositories and their respective links at:
+
+https://build.opensuse.org/project/repositories/home:pjanouch:git
+
+Building and Usage
+------------------
 Build dependencies: CMake, pkg-config, help2man,
                     liberty (included), http-parser (included) +
 Runtime dependencies: libev, Jansson, cURL, openssl,
