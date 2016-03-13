@@ -3059,8 +3059,11 @@ resolve_relative_runtime_unique_filename (const char *filename)
 	str_init (&path);
 
 	const char *runtime_dir = getenv ("XDG_RUNTIME_DIR");
+	const char *tmpdir = getenv ("TMPDIR");
 	if (runtime_dir && *runtime_dir == '/')
 		str_append (&path, runtime_dir);
+	else if (tmpdir && *tmpdir == '/')
+		str_append (&path, tmpdir);
 	else
 		str_append (&path, "/tmp");
 	str_append_printf (&path, "/%s/%s", PROGRAM_NAME, filename);
