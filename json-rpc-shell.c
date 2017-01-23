@@ -1280,7 +1280,7 @@ struct ws_context
 
 	char *endpoint;                     ///< Endpoint URL
 	struct http_parser_url url;         ///< Parsed URL
-	struct str_vector extra_headers;    ///< Extra headers for the handshake
+	struct strv extra_headers;          ///< Extra headers for the handshake
 
 	// Events:
 
@@ -1319,7 +1319,7 @@ static void
 backend_ws_add_header (struct backend *backend, const char *header)
 {
 	struct ws_context *self = (struct ws_context *) backend;
-	str_vector_add (&self->extra_headers, header);
+	strv_append (&self->extra_headers, header);
 }
 
 enum ws_read_result
@@ -2193,7 +2193,7 @@ backend_ws_destroy (struct backend *backend)
 		backend_ws_close_connection (self);
 
 	free (self->endpoint);
-	str_vector_free (&self->extra_headers);
+	strv_free (&self->extra_headers);
 	if (self->e)
 		error_free (self->e);
 	ev_timer_stop (EV_DEFAULT_ &self->timeout_watcher);
@@ -2236,7 +2236,7 @@ backend_ws_new (struct app_context *ctx,
 	self->headers.free = free;
 	ws_parser_init (&self->parser);
 	str_init (&self->message_data);
-	str_vector_init (&self->extra_headers);
+	strv_init (&self->extra_headers);
 
 	self->endpoint = xstrdup (endpoint);
 	self->url = *url;
