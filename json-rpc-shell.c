@@ -2241,10 +2241,15 @@ backend_ws_new (struct app_context *ctx,
 	self->endpoint = xstrdup (endpoint);
 	self->url = *url;
 
+#if OPENSSL_VERSION_NUMBER < 0x10100000L || LIBRESSL_VERSION_NUMBER
 	SSL_library_init ();
 	atexit (EVP_cleanup);
 	SSL_load_error_strings ();
 	atexit (ERR_free_strings);
+#else
+	// Cleanup is done automatically via atexit()
+	OPENSSL_init_ssl (0, NULL);
+#endif
 	return &self->super;
 }
 

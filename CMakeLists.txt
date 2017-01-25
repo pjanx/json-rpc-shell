@@ -28,6 +28,8 @@ set (CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 find_package (Curses)
 find_package (PkgConfig REQUIRED)
 pkg_check_modules (dependencies REQUIRED libcurl jansson)
+# Note that cURL can link to a different version of libssl than we do,
+# in which case the results are undefined
 pkg_check_modules (libssl REQUIRED libssl libcrypto)
 find_package (LibEV REQUIRED)
 pkg_check_modules (ncursesw ncursesw)
