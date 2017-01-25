@@ -56,9 +56,15 @@ my $any_token = qr/\G(${\join '|', @all_pats})/;
 my $indent = 0;
 
 sub nexttoken ($) {
-  my $ref = shift;
-  return unless @$ref;
-  my $text = shift @$ref;
+  my $json = shift;
+  if (!@$json) {
+    return unless defined (my $line = <>);
+    push @$json, $line =~ /$any_token/gsc;
+    push @$json, substr $line, pos $line
+      if pos $line != length $line;
+  }
+
+  my $text = shift @$json;
   if (my $s = $lookup{$text}) {
     return $s, $text;
   }
@@ -66,6 +72,15 @@ sub nexttoken ($) {
     return $s->[1], $text if $text =~ $s->[0];
   }
   return 'ERROR', $text;
+}
+
+sub skip_ws ($) {
+  my $json = shift;
+  while (my ($token, $text) = nexttoken $json) {
+    next if $token eq 'WS';
+    return $token, $text;
+  }
+  return;
 }
 
 sub printindent () {
@@ -78,7 +93,7 @@ sub do_object ($) {
   my $json = shift;
   my $in_field_name = 1;
   my $first = 1;
-  while (my ($token, $text) = nexttoken $json) {
+  while (my ($token, $text) = skip_ws $json) {
     if ($token eq 'COLON') {
       $in_field_name = 0;
     } elsif ($token eq 'COMMA') {
@@ -101,7 +116,7 @@ sub do_object ($) {
 sub do_array ($) {
   my $json = shift;
   my $first = 1;
-  while (my ($token, $text) = nexttoken $json) {
+  while (my ($token, $text) = skip_ws $json) {
     if ($token eq 'RBRACKET') {
       $indent--;
       printindent;
@@ -134,16 +149,8 @@ sub do_value ($$$) {
   }
 }
 
-while (<>) {
-  # FIXME: this way it doesn't work with pre-formatted JSON
-  my $json = $_;
-
-  my @matches = $json =~ /$any_token/gsc;
-  push @matches, substr $json, pos $json
-    if pos $json != length $json;
-  while (my ($token, $text) = nexttoken \@matches) {
-    next if $token eq 'WS';
-    do_value $token, $text, \@matches;
-  }
-  print "\n";
+my @buffer;
+while (my ($token, $text) = skip_ws \@buffer) {
+  do_value $token, $text, \@buffer;
 }
+print "\n";
