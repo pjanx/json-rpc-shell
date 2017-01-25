@@ -21,7 +21,7 @@ my $help;
 if (!GetOptions('color=s' => \$color, 'help' => \$help) || $help) {
   print STDERR
     "Usage: $0 [OPTION...] [FILE...]\n" .
-	"Pretty-print and colorify JSON\n" .
+    "Pretty-print and colorify JSON\n" .
     "\n" .
     "  --help         print this help\n" .
     "  --color=COLOR  'always', 'never' or 'auto' (the default)\n";
@@ -77,6 +77,7 @@ sub do_value ($$$);
 sub do_object ($) {
   my $json = shift;
   my $in_field_name = 1;
+  my $first = 1;
   while (my ($token, $text) = nexttoken $json) {
     if ($token eq 'COLON') {
       $in_field_name = 0;
@@ -88,6 +89,9 @@ sub do_object ($) {
     if ($token eq 'RBRACE') {
       $indent--;
       printindent;
+    } elsif ($first) {
+      printindent;
+      $first = 0;
     }
     do_value $token, $text, $json;
     return if $token eq 'RBRACE';
@@ -96,10 +100,14 @@ sub do_object ($) {
 
 sub do_array ($) {
   my $json = shift;
+  my $first = 1;
   while (my ($token, $text) = nexttoken $json) {
     if ($token eq 'RBRACKET') {
       $indent--;
       printindent;
+    } elsif ($first) {
+      printindent;
+      $first = 0;
     }
     do_value $token, $text, $json;
     return if $token eq 'RBRACKET';
@@ -115,11 +123,9 @@ sub do_value ($$$) {
   }
   if ($token eq 'LBRACE') {
     $indent++;
-    printindent;
     do_object $json;
   } elsif ($token eq 'LBRACKET') {
     $indent++;
-    printindent;
     do_array $json;
   } elsif ($token eq 'COMMA') {
     printindent;
@@ -129,14 +135,15 @@ sub do_value ($$$) {
 }
 
 while (<>) {
-    my $json = $_;
+  # FIXME: this way it doesn't work with pre-formatted JSON
+  my $json = $_;
 
-    my @matches = $json =~ /$any_token/gsc;
-    push @matches, substr $json, pos $json
-      if pos $json != length $json;
-    while (my ($token, $text) = nexttoken \@matches) {
-      next if $token eq 'WS';
-      do_value $token, $text, \@matches;
-    }
-    print "\n";
+  my @matches = $json =~ /$any_token/gsc;
+  push @matches, substr $json, pos $json
+    if pos $json != length $json;
+  while (my ($token, $text) = nexttoken \@matches) {
+    next if $token eq 'WS';
+    do_value $token, $text, \@matches;
+  }
+  print "\n";
 }
