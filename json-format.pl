@@ -16,14 +16,15 @@ my %format = (
   ERROR  => color('bold white on_red'),
 );
 
-my $color = 'auto';
-my $help;
-if (!GetOptions('color=s' => \$color, 'help' => \$help) || $help) {
+my ($color, $keep_ws, $help) = 'auto';
+if (!GetOptions('color=s' => \$color, 'keep-ws' => \$keep_ws, 'help' => \$help)
+  || $help) {
   print STDERR
     "Usage: $0 [OPTION...] [FILE...]\n" .
     "Pretty-print and colorify JSON\n" .
     "\n" .
     "  --help         print this help\n" .
+    "  --keep-ws      retain all original whitespace\n" .
     "  --color=COLOR  'always', 'never' or 'auto' (the default)\n";
   exit 2;
 }
@@ -77,7 +78,7 @@ sub nexttoken ($) {
 sub skip_ws ($) {
   my $json = shift;
   while (my ($token, $text) = nexttoken $json) {
-    next if $token eq 'WS';
+    next if !$keep_ws && $token eq 'WS';
     return $token, $text;
   }
   return;
@@ -103,9 +104,9 @@ sub do_object ($) {
     }
     if ($token eq 'RBRACE') {
       $indent--;
-      printindent;
+      printindent unless $keep_ws;
     } elsif ($first) {
-      printindent;
+      printindent unless $keep_ws;
       $first = 0;
     }
     do_value $token, $text, $json;
@@ -119,9 +120,9 @@ sub do_array ($) {
   while (my ($token, $text) = skip_ws $json) {
     if ($token eq 'RBRACKET') {
       $indent--;
-      printindent;
+      printindent unless $keep_ws;
     } elsif ($first) {
-      printindent;
+      printindent unless $keep_ws;
       $first = 0;
     }
     do_value $token, $text, $json;
@@ -143,9 +144,9 @@ sub do_value ($$$) {
     $indent++;
     do_array $json;
   } elsif ($token eq 'COMMA') {
-    printindent;
+    printindent unless $keep_ws;
   } elsif ($token eq 'COLON') {
-    print ' ';
+    print ' ' unless $keep_ws;
   }
 }
 
@@ -153,4 +154,4 @@ my @buffer;
 while (my ($token, $text) = skip_ws \@buffer) {
   do_value $token, $text, \@buffer;
 }
-print "\n";
+print "\n" unless $keep_ws;
