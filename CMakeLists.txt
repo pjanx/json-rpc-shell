@@ -71,6 +71,7 @@ target_link_libraries (${PROJECT_NAME} ${project_libraries})
 # The files to be installed
 include (GNUInstallDirs)
 install (TARGETS ${PROJECT_NAME} DESTINATION ${CMAKE_INSTALL_BINDIR})
+install (PROGRAMS json-format.pl DESTINATION ${CMAKE_INSTALL_BINDIR})
 install (FILES LICENSE DESTINATION ${CMAKE_INSTALL_DOCDIR})
 
 # Generate documentation from program help
