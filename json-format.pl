@@ -1,6 +1,4 @@
 #!/usr/bin/env perl
-# To speed up processing of large files, GNU parallel can be used:
-#   $ parallel --pipe -k json-format.pl INPUT
 use strict;
 use warnings;
 use Term::ANSIColor;
@@ -75,7 +73,7 @@ sub nexttoken ($) {
   return 'ERROR', $text;
 }
 
-sub skip_ws ($) {
+sub gettoken ($) {
   my $json = shift;
   while (my ($token, $text) = nexttoken $json) {
     next if !$keep_ws && $token eq 'WS';
@@ -85,8 +83,7 @@ sub skip_ws ($) {
 }
 
 sub printindent () {
-  print "\n";
-  print '  ' x $indent;
+  print "\n", '  ' x $indent;
 }
 
 sub do_value ($$$);
@@ -94,7 +91,7 @@ sub do_object ($) {
   my $json = shift;
   my $in_field_name = 1;
   my $first = 1;
-  while (my ($token, $text) = skip_ws $json) {
+  while (my ($token, $text) = gettoken $json) {
     if ($token eq 'COLON') {
       $in_field_name = 0;
     } elsif ($token eq 'COMMA') {
@@ -117,7 +114,7 @@ sub do_object ($) {
 sub do_array ($) {
   my $json = shift;
   my $first = 1;
-  while (my ($token, $text) = skip_ws $json) {
+  while (my ($token, $text) = gettoken $json) {
     if ($token eq 'RBRACKET') {
       $indent--;
       printindent unless $keep_ws;
@@ -151,7 +148,7 @@ sub do_value ($$$) {
 }
 
 my @buffer;
-while (my ($token, $text) = skip_ws \@buffer) {
+while (my ($token, $text) = gettoken \@buffer) {
   do_value $token, $text, \@buffer;
+  print "\n" unless $keep_ws;
 }
-print "\n" unless $keep_ws;
