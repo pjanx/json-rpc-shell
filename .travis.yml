@@ -4,6 +4,12 @@ notifications:
   channels: "irc.janouch.name#dev"
   use_notice: true
   skip_join: true
+  template:
+   - "%{repository_name}#%{build_number} on %{branch}: %{message}"
+   - "  %{compare_url}"
+   - "  %{build_url}"
+  on_success: change
+  on_failure: always
 compiler:
  - clang
  - gcc
