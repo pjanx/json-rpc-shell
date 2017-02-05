@@ -939,20 +939,20 @@ ws_handler_http_responsev (struct ws_handler *self,
 static void
 ws_handler_http_response (struct ws_handler *self, const char *status, ...)
 {
-	struct str_vector v;
-	str_vector_init (&v);
+	struct strv v;
+	strv_init (&v);
 
 	va_list ap;
 	va_start (ap, status);
 
 	const char *s;
 	while ((s = va_arg (ap, const char *)))
-		str_vector_add (&v, s);
+		strv_append (&v, s);
 
 	va_end (ap);
 
 	ws_handler_http_responsev (self, status, v.vector);
-	str_vector_free (&v);
+	strv_free (&v);
 }
 
 #define FAIL_HANDSHAKE(status, ...)                                            \
@@ -1020,16 +1020,16 @@ ws_handler_finish_handshake (struct ws_handler *self)
 	if (strcmp (version, "13"))
 		FAIL_HANDSHAKE (HTTP_400_BAD_REQUEST, SEC_WS_VERSION ": 13", NULL);
 
-	struct str_vector fields;
-	str_vector_init (&fields);
+	struct strv fields;
+	strv_init (&fields);
 
-	str_vector_add_args (&fields,
+	strv_append_args (&fields,
 		"Upgrade: websocket",
 		"Connection: Upgrade",
 		NULL);
 
 	char *response_key = ws_encode_response_key (key);
-	str_vector_add_owned (&fields,
+	strv_append_owned (&fields,
 		xstrdup_printf (SEC_WS_ACCEPT ": %s", response_key));
 	free (response_key);
 
@@ -1038,7 +1038,7 @@ ws_handler_finish_handshake (struct ws_handler *self)
 	ws_handler_http_responsev (self,
 		HTTP_101_SWITCHING_PROTOCOLS, fields.vector);
 
-	str_vector_free (&fields);
+	strv_free (&fields);
 
 	ev_timer_init (&self->ping_timer, ws_handler_on_ping_timer,
 		self->ping_interval, 0);
@@ -1580,15 +1580,15 @@ static char *
 canonicalize_url_path (const char *path)
 {
 	// XXX: this strips any slashes at the end
-	struct str_vector v;
-	str_vector_init (&v);
-	cstr_split_ignore_empty (path, '/', &v);
+	struct strv v;
+	strv_init (&v);
+	cstr_split (path, "/", true, &v);
 
-	struct str_vector canonical;
-	str_vector_init (&canonical);
+	struct strv canonical;
+	strv_init (&canonical);
 
 	// So that the joined path always begins with a slash
-	str_vector_add (&canonical, "");
+	strv_append (&canonical, "");
 
 	for (size_t i = 0; i < v.len; i++)
 	{
@@ -1597,15 +1597,15 @@ canonicalize_url_path (const char *path)
 			continue;
 
 		if (strcmp (dir, ".."))
-			str_vector_add (&canonical, dir);
+			strv_append (&canonical, dir);
 		else if (canonical.len > 1)
 			// ".." never goes above the root
-			str_vector_remove (&canonical, canonical.len - 1);
+			strv_remove (&canonical, canonical.len - 1);
 	}
-	str_vector_free (&v);
+	strv_free (&v);
 
-	char *joined = join_str_vector (&canonical, '/');
-	str_vector_free (&canonical);
+	char *joined = strv_join (&canonical, "/");
+	strv_free (&canonical);
 	return joined;
 }
 
@@ -2382,11 +2382,11 @@ listener_add (struct server_context *ctx, const char *host, const char *port,
 
 static void
 get_ports_from_config (struct server_context *ctx,
-	const char *key, struct str_vector *out)
+	const char *key, struct strv *out)
 {
 	const char *ports;
 	if ((ports = str_map_find (&ctx->config, key)))
-		cstr_split_ignore_empty (ports, ',', out);
+		cstr_split (ports, ",", true, out);
 }
 
 static bool
@@ -2398,9 +2398,9 @@ setup_listen_fds (struct server_context *ctx, struct error **e)
 		.ai_flags = AI_PASSIVE,
 	};
 
-	struct str_vector ports_fcgi;  str_vector_init (&ports_fcgi);
-	struct str_vector ports_scgi;  str_vector_init (&ports_scgi);
-	struct str_vector ports_ws;    str_vector_init (&ports_ws);
+	struct strv ports_fcgi;  strv_init (&ports_fcgi);
+	struct strv ports_scgi;  strv_init (&ports_scgi);
+	struct strv ports_ws;    strv_init (&ports_ws);
 
 	get_ports_from_config (ctx, "port_fastcgi", &ports_fcgi);
 	get_ports_from_config (ctx, "port_scgi",    &ports_scgi);
@@ -2420,9 +2420,9 @@ setup_listen_fds (struct server_context *ctx, struct error **e)
 		listener_add (ctx, bind_host, ports_ws.vector[i],
 			&gai_hints, client_ws_create);
 
-	str_vector_free (&ports_fcgi);
-	str_vector_free (&ports_scgi);
-	str_vector_free (&ports_ws);
+	strv_free (&ports_fcgi);
+	strv_free (&ports_scgi);
+	strv_free (&ports_ws);
 
 	if (!ctx->n_listeners)
 	{
