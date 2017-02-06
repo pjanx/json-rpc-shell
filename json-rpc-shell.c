@@ -2042,6 +2042,8 @@ backend_ws_connect (struct ws_context *self, struct error **e)
 			self->url.field_data[UF_QUERY].len);
 	}
 
+	// TODO: I guess we should also reset it on error
+	self->state = WS_HANDLER_CONNECTING;
 	if (!backend_ws_establish_connection (self, url_host, url_port, e))
 		goto fail_1;
 
