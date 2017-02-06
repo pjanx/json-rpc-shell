@@ -1176,7 +1176,7 @@ server_context_init (struct server_context *self)
 
 	str_map_init (&self->config);
 	simple_config_load_defaults (&self->config, g_config_table);
-	ev_timer_init (&self->quit_timeout_watcher, on_quit_timeout, 0., 0.);
+	ev_timer_init (&self->quit_timeout_watcher, on_quit_timeout, 3., 0.);
 	self->quit_timeout_watcher.data = self;
 }
 
@@ -2260,13 +2260,15 @@ on_quit_timeout (EV_P_ ev_timer *watcher, int revents)
 static void
 initiate_quit (struct server_context *self)
 {
+	self->quitting = true;
 	close_listeners (self);
+
+	// Wait a little while for all clients to clean up, if necessary
 	LIST_FOR_EACH (struct client, iter, self->clients)
 		if (iter->vtable->shutdown)
 			iter->vtable->shutdown (iter);
-
-	ev_timer_set (&self->quit_timeout_watcher, 3., 0.);
-	self->quitting = true;
+	ev_timer_start (EV_DEFAULT_ &self->quit_timeout_watcher);
+	try_finish_quit (self);
 }
 
 static void
