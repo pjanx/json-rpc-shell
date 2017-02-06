@@ -1909,7 +1909,7 @@ backend_ws_finish_closing_handshake
 	}
 
 	char *s = iconv_xstrdup (self->ctx->term_from_utf8,
-		reason.str, reason.len, NULL);
+		reason.str, reason.len + 1 /* null byte */, NULL);
 	print_status ("server closed the connection (%s)", s);
 	str_free (&reason);
 	free (s);
@@ -2932,7 +2932,7 @@ make_json_rpc_call (struct app_context *ctx,
 	if (!success)
 	{
 		char *s = iconv_xstrdup (ctx->term_from_utf8,
-			buf.str, buf.len + 1, NULL);
+			buf.str, buf.len + 1 /* null byte */, NULL);
 		if (!s)
 			print_error ("character conversion failed for `%s'",
 				"raw response data");
