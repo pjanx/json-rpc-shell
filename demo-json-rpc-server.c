@@ -2149,8 +2149,9 @@ client_ws_on_message (void *user_data,
 	struct str response;
 	str_init (&response);
 	process_json_rpc (self->client.ctx, data, len, &response);
-	ws_handler_send (&self->handler,
-		WS_OPCODE_TEXT, response.str, response.len);
+	if (response.len)
+		ws_handler_send (&self->handler,
+			WS_OPCODE_TEXT, response.str, response.len);
 	str_free (&response);
 	return true;
 }
