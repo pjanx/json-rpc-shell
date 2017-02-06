@@ -1877,6 +1877,7 @@ client_init (EV_P_ struct client *self, int sock_fd)
 	struct server_context *ctx = ev_userdata (loop);
 
 	memset (self, 0, sizeof *self);
+	self->ctx = ctx;
 	write_queue_init (&self->write_queue);
 
 	set_blocking (sock_fd, false);
