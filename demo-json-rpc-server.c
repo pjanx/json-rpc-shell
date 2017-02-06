@@ -476,7 +476,7 @@ struct ws_handler
 	// HTTP handshake:
 
 	http_parser hp;                     ///< HTTP parser
-	bool parsing_header_value;          ///< Parsing header value or field?
+	bool have_header_value;             ///< Parsing header value or field?
 	struct str field;                   ///< Field part buffer
 	struct str value;                   ///< Value part buffer
 	struct str_map headers;             ///< HTTP Headers
@@ -873,14 +873,14 @@ static int
 ws_handler_on_header_field (http_parser *parser, const char *at, size_t len)
 {
 	struct ws_handler *self = parser->data;
-	if (self->parsing_header_value)
+	if (self->have_header_value)
 	{
 		ws_handler_on_header_read (self);
 		str_reset (&self->field);
 		str_reset (&self->value);
 	}
 	str_append_data (&self->field, at, len);
-	self->parsing_header_value = false;
+	self->have_header_value = false;
 	return 0;
 }
 
@@ -889,13 +889,17 @@ ws_handler_on_header_value (http_parser *parser, const char *at, size_t len)
 {
 	struct ws_handler *self = parser->data;
 	str_append_data (&self->value, at, len);
-	self->parsing_header_value = true;
+	self->have_header_value = true;
 	return 0;
 }
 
 static int
 ws_handler_on_headers_complete (http_parser *parser)
 {
+	struct ws_handler *self = parser->data;
+	if (self->have_header_value)
+		ws_handler_on_header_read (self);
+
 	// We strictly require a protocol upgrade
 	if (!parser->upgrade)
 		return 2;
