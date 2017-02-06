@@ -1012,6 +1012,9 @@ ws_handler_finish_handshake (struct ws_handler *self)
 	const char *version  = str_map_find (&self->headers, SEC_WS_VERSION);
 	const char *protocol = str_map_find (&self->headers, SEC_WS_PROTOCOL);
 
+	if (!key)
+		FAIL_HANDSHAKE (HTTP_400_BAD_REQUEST, NULL);
+
 	struct str tmp;
 	str_init (&tmp);
 	bool key_is_valid = base64_decode (key, false, &tmp) && tmp.len == 16;
