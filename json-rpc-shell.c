@@ -2126,7 +2126,7 @@ backend_ws_connect (struct ws_context *self, struct error **e)
 		result = true;
 
 fail_2:
-	if (!result)
+	if (!result && self->server_fd != -1)
 	{
 		xclose (self->server_fd);
 		self->server_fd = -1;
