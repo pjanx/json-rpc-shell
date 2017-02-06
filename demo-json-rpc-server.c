@@ -789,6 +789,7 @@ ws_handler_init (struct ws_handler *self)
 	ws_parser_init (&self->parser);
 	self->parser.on_frame_header = ws_handler_on_frame_header;
 	self->parser.on_frame = ws_handler_on_frame;
+	self->parser.user_data = self;
 	str_init (&self->message_data);
 
 	ev_timer_init (&self->ping_timer,
