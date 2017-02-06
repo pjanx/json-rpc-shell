@@ -2071,6 +2071,7 @@ backend_ws_connect (struct ws_context *self, struct error **e)
 	str_append_printf (&request, "Upgrade: websocket\r\n");
 	str_append_printf (&request, "Connection: upgrade\r\n");
 	str_append_printf (&request, SEC_WS_KEY ": %s\r\n", key_b64_string);
+	str_append_printf (&request, SEC_WS_VERSION ": %s\r\n", "13");
 	for (size_t i = 0; i < self->extra_headers.len; i++)
 		str_append_printf (&request, "%s\r\n", self->extra_headers.vector[i]);
 	str_append_printf (&request, "\r\n");
