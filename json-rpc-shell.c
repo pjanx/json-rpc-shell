@@ -2085,6 +2085,7 @@ backend_ws_connect (struct ws_context *self, struct error **e)
 	}
 
 	http_parser_init (&self->hp, HTTP_RESPONSE);
+	self->hp.data = self;
 	str_reset (&self->field);
 	str_reset (&self->value);
 	str_map_clear (&self->headers);
