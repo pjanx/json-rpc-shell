@@ -27,9 +27,8 @@ Supported transports
 
 WebSockets
 ~~~~~~~~~~
-The WebSocket transport is rather experimental.  As the JSON-RPC 2.0 spec
-doesn't say almost anything about the underlying transports, I'll shortly
-describe the way it's implemented: every request is sent as a single text
+The JSON-RPC 2.0 spec doesn't say almost anything about underlying transports.
+The way it's implemented here is that every request is sent as a single text
 message.  If it has an "id" field, i.e. it's not just a notification, the
 client waits for a message from the server in response.
 

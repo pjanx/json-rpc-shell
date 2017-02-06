@@ -3432,11 +3432,7 @@ main (int argc, char *argv[])
 		g_ctx.backend = backend_curl_new (&g_ctx, endpoint);
 	else if (!strcasecmp_ascii (url_schema, "ws")
 		|| !strcasecmp_ascii (url_schema, "wss"))
-	{
-		print_warning ("WebSocket support is experimental"
-			" and most likely completely broken");
 		g_ctx.backend = backend_ws_new (&g_ctx, endpoint, &url);
-	}
 	else
 		exit_fatal ("unsupported protocol");
 	free (url_schema);
