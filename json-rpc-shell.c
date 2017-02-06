@@ -2107,6 +2107,7 @@ backend_ws_connect (struct ws_context *self, struct error **e)
 	//   As it is, this isn't really too useful.
 	ev_timer_init (&self->timeout_watcher,
 		backend_ws_on_connection_timeout, 30, 0);
+	self->timeout_watcher.data = self;
 
 	// Run an event loop to process the handshake
 	ev_timer_start (EV_DEFAULT_ &self->timeout_watcher);
