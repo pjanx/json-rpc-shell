@@ -1058,28 +1058,6 @@ save_configuration (struct config_item *root, const char *path_hint)
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-// TODO: consider moving to liberty, degesch has exactly the same function
-static struct config_item *
-load_configuration_file (const char *filename, struct error **e)
-{
-	struct config_item *root = NULL;
-
-	struct str data;
-	str_init (&data);
-	if (!read_file (filename, &data, e))
-		goto end;
-
-	struct error *error = NULL;
-	if (!(root = config_item_parse (data.str, data.len, false, &error)))
-	{
-		error_set (e, "parse error: %s", error->message);
-		error_free (error);
-	}
-end:
-	str_free (&data);
-	return root;
-}
-
 static void
 load_configuration (struct app_context *ctx)
 {
@@ -1089,7 +1067,7 @@ load_configuration (struct app_context *ctx)
 		return;
 
 	struct error *e = NULL;
-	struct config_item *root = load_configuration_file (filename, &e);
+	struct config_item *root = config_read_from_file (filename, &e);
 	free (filename);
 
 	if (e)
