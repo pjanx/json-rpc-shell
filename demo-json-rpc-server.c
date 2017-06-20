@@ -2387,6 +2387,7 @@ listener_add (struct server_context *ctx, const char *host, const char *port,
 		ev_io_start (EV_DEFAULT_ &listener->watcher);
 		listener->watcher.data = listener;
 		listener->create = create;
+		listener->fd = fd;
 		break;
 	}
 	freeaddrinfo (gai_result);
