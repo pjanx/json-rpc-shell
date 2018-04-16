@@ -3238,9 +3238,17 @@ on_tty_readable (EV_P_ ev_io *handle, int revents)
 {
 	(void) handle;
 
+	static bool readline_reentrancy_lock;
+	if (readline_reentrancy_lock)
+		return;
+
 	struct app_context *ctx = ev_userdata (loop);
 	if (revents & EV_READ)
+	{
+		readline_reentrancy_lock = true;
 		ctx->input->vtable->on_tty_readable (ctx->input);
+		readline_reentrancy_lock = false;
+	}
 }
 
 static void
