@@ -1029,9 +1029,7 @@ get_config_string (struct config_item *root, const char *key)
 static void
 save_configuration (struct config_item *root, const char *path_hint)
 {
-	struct str data;
-	str_init (&data);
-
+	struct str data = str_make ();
 	str_append (&data,
 		"# " PROGRAM_NAME " " PROGRAM_VERSION " configuration file\n"
 		"#\n"
@@ -1780,8 +1778,7 @@ static bool
 backend_ws_send_message (struct ws_context *self,
 	enum ws_opcode opcode, const void *data, size_t len)
 {
-	struct str header;
-	str_init (&header);
+	struct str header = str_make ();
 	str_pack_u8 (&header, 0x80 | (opcode & 0x0F));
 
 	if (len > UINT16_MAX)
@@ -1870,13 +1867,11 @@ static bool
 backend_ws_finish_closing_handshake
 	(struct ws_context *self, const struct ws_parser *parser)
 {
-	struct str reason;
-	str_init (&reason);
-
+	struct str reason = str_make ();
 	if (parser->payload_len >= 2)
 	{
-		struct msg_unpacker unpacker;
-		msg_unpacker_init (&unpacker, parser->input.str, parser->payload_len);
+		struct msg_unpacker unpacker =
+			msg_unpacker_make (parser->input.str, parser->payload_len);
 
 		uint16_t status_code;
 		msg_unpacker_u16 (&unpacker, &status_code);
@@ -2004,8 +1999,7 @@ backend_ws_connect (struct ws_context *self, struct error **e)
 			self->url.field_data[UF_PORT].len)
 		: xstrdup (use_tls ? "443" : "80");
 
-	struct str url_path;
-	str_init (&url_path);
+	struct str url_path = str_make ();
 	if (self->url.field_set & (1 << UF_PATH))
 		str_append_data (&url_path, self->endpoint +
 			self->url.field_data[UF_PATH].off,
@@ -2035,16 +2029,13 @@ backend_ws_connect (struct ws_context *self, struct error **e)
 		goto fail_2;
 	}
 
-	struct str key_b64;
-	str_init (&key_b64);
+	struct str key_b64 = str_make ();
 	base64_encode (key, sizeof key, &key_b64);
 
 	free (self->key);
 	char *key_b64_string = self->key = str_steal (&key_b64);
 
-	struct str request;
-	str_init (&request);
-
+	struct str request = str_make ();
 	str_append_printf (&request, "GET %s HTTP/1.1\r\n", url_path.str);
 	// TODO: omit the port if it's the default (check RFC for "SHOULD" or ...)
 	str_append_printf (&request, "Host: %s:%s\r\n", url_host, url_port);
@@ -2070,7 +2061,7 @@ backend_ws_connect (struct ws_context *self, struct error **e)
 	str_reset (&self->value);
 	str_map_clear (&self->headers);
 	ws_parser_free (&self->parser);
-	ws_parser_init (&self->parser);
+	self->parser = ws_parser_make ();
 	self->parser.on_frame_header = backend_ws_on_frame_header;
 	self->parser.on_frame        = backend_ws_on_frame;
 	self->parser.user_data       = self;
@@ -2215,14 +2206,13 @@ backend_ws_new (struct app_context *ctx,
 	self->server_fd = -1;
 	ev_io_init (&self->read_watcher, NULL, 0, 0);
 	http_parser_init (&self->hp, HTTP_RESPONSE);
-	str_init (&self->field);
-	str_init (&self->value);
-	str_map_init (&self->headers);
+	self->field = str_make ();
+	self->value = str_make ();
+	self->headers = str_map_make (free);
 	self->headers.key_xfrm = tolower_ascii_strxfrm;
-	self->headers.free = free;
-	ws_parser_init (&self->parser);
-	str_init (&self->message_data);
-	strv_init (&self->extra_headers);
+	self->parser = ws_parser_make ();
+	self->message_data = str_make ();
+	self->extra_headers = strv_make ();
 
 	self->endpoint = xstrdup (endpoint);
 	self->url = *url;
@@ -2265,9 +2255,7 @@ validate_json_rpc_content_type (const char *content_type)
 	char *type = NULL;
 	char *subtype = NULL;
 
-	struct str_map parameters;
-	str_map_init (&parameters);
-	parameters.free = free;
+	struct str_map parameters = str_map_make (free);
 	parameters.key_xfrm = tolower_ascii_strxfrm;
 
 	bool result = http_parse_media_type
@@ -2431,7 +2419,7 @@ jtokenizer_init (struct jtokenizer *self, const char *p, size_t len)
 {
 	self->p = p;
 	self->len = len;
-	str_init (&self->chunk);
+	self->chunk = str_make ();
 }
 
 static void
@@ -2886,9 +2874,7 @@ make_json_rpc_call (struct app_context *ctx,
 		free (req_term);
 	}
 
-	struct str buf;
-	str_init (&buf);
-
+	struct str buf = str_make ();
 	struct error *e = NULL;
 	if (!ctx->backend->vtable->make_call
 		(ctx->backend, req_utf8, id != NULL, &buf, &e))
@@ -3046,8 +3032,7 @@ fail:
 static char *
 resolve_relative_runtime_unique_filename (const char *filename)
 {
-	struct str path;
-	str_init (&path);
+	struct str path = str_make ();
 
 	const char *runtime_dir = getenv ("XDG_RUNTIME_DIR");
 	const char *tmpdir = getenv ("TMPDIR");
@@ -3177,9 +3162,7 @@ run_editor (const char *line, void *user_data)
 static void
 process_edited_input (struct app_context *ctx)
 {
-	struct str input;
-	str_init (&input);
-
+	struct str input = str_make ();
 	struct error *e = NULL;
 	if (!read_file (ctx->editor_filename, &input, &e))
 	{
@@ -3315,8 +3298,7 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv,
 		{ 0, NULL, NULL, 0, NULL }
 	};
 
-	struct opt_handler oh;
-	opt_handler_init (&oh, argc, argv, opts,
+	struct opt_handler oh = opt_handler_make (argc, argv, opts,
 		"ENDPOINT", "Simple JSON-RPC shell.");
 
 	int c;
@@ -3378,7 +3360,7 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv,
 int
 main (int argc, char *argv[])
 {
-	config_init (&g_ctx.config);
+	g_ctx.config = config_make ();
 	register_config_modules (&g_ctx);
 	config_load (&g_ctx.config, config_item_object ());
 

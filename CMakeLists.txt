@@ -6,11 +6,11 @@ option (WANT_READLINE "Use GNU Readline for the UI (better)" ON)
 option (WANT_LIBEDIT "Use BSD libedit for the UI" OFF)
 
 # Moar warnings
-if ("${CMAKE_C_COMPILER_ID}" MATCHES "GNU" OR CMAKE_COMPILER_IS_GNUC)
+if ("${CMAKE_C_COMPILER_ID}" MATCHES "GNU" OR CMAKE_COMPILER_IS_GNUCC)
 	# -Wunused-function is pretty annoying here, as everything is static
 	set (CMAKE_C_FLAGS
 		"${CMAKE_C_FLAGS} -std=c99 -Wall -Wextra -Wno-unused-function")
-endif ("${CMAKE_C_COMPILER_ID}" MATCHES "GNU" OR CMAKE_COMPILER_IS_GNUC)
+endif ("${CMAKE_C_COMPILER_ID}" MATCHES "GNU" OR CMAKE_COMPILER_IS_GNUCC)
 
 # Version
 set (project_VERSION_MAJOR "0")
