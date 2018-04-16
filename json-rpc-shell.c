@@ -3238,16 +3238,13 @@ on_tty_readable (EV_P_ ev_io *handle, int revents)
 {
 	(void) handle;
 
-	static bool readline_reentrancy_lock;
-	if (readline_reentrancy_lock)
-		return;
-
 	struct app_context *ctx = ev_userdata (loop);
 	if (revents & EV_READ)
 	{
-		readline_reentrancy_lock = true;
+		// rl_callback_read_char() is not reentrant, may happen on EOF
+		ev_io_stop (EV_DEFAULT_ &ctx->tty_watcher);
 		ctx->input->vtable->on_tty_readable (ctx->input);
-		readline_reentrancy_lock = false;
+		ev_io_start (EV_DEFAULT_ &ctx->tty_watcher);
 	}
 }
 
