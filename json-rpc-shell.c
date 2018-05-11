@@ -1917,6 +1917,9 @@ backend_ws_on_control_frame
 	return true;
 }
 
+static int normalize_whitespace (int c) { return isspace_ascii (c) ? ' ' : c; }
+
+/// Caller guarantees that data[len] is a NUL byte (because of iconv_xstrdup())
 static bool
 backend_ws_on_message (struct ws_context *self,
 	enum ws_opcode type, const void *data, size_t len)
@@ -1926,7 +1929,12 @@ backend_ws_on_message (struct ws_context *self,
 
 	if (!self->waiting_for_event || !self->response_buffer)
 	{
-		print_warning ("unexpected message received");
+		char *s = iconv_xstrdup (self->ctx->term_from_utf8,
+			(char *) data, len + 1 /* null byte */, NULL);
+		// Does not affect JSON and ensures the message is printed out okay
+		cstr_transform (s, normalize_whitespace);
+		print_warning ("unexpected message received: %s", s);
+		free (s);
 		return true;
 	}
 
