@@ -1832,7 +1832,7 @@ backend_ws_send_control (struct ws_context *self,
 static bool
 backend_ws_fail (struct ws_context *self, enum ws_status reason)
 {
-	uint8_t payload[2] = { reason << 8, reason };
+	uint8_t payload[2] = { reason >> 8, reason };
 	(void) backend_ws_send_control (self, WS_OPCODE_CLOSE,
 		payload, sizeof payload);
 
