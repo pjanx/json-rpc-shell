@@ -144,8 +144,7 @@ fcgi_muxer_send (struct fcgi_muxer *self,
 {
 	hard_assert (len <= UINT16_MAX);
 
-	struct str message;
-	str_init (&message);
+	struct str message = str_make ();
 
 	str_pack_u8  (&message, FCGI_VERSION_1);
 	str_pack_u8  (&message, type);
@@ -177,10 +176,9 @@ fcgi_request_init (struct fcgi_request *self)
 {
 	memset (self, 0, sizeof *self);
 
-	str_map_init (&self->headers);
-	self->headers.free = free;
+	self->headers = str_map_make (free);
 
-	fcgi_nv_parser_init (&self->hdr_parser);
+	self->hdr_parser = fcgi_nv_parser_make ();
 	self->hdr_parser.output = &self->headers;
 }
 
@@ -275,17 +273,15 @@ static void
 fcgi_muxer_on_get_values
 	(struct fcgi_muxer *self, const struct fcgi_parser *parser)
 {
-	struct str_map values;    str_map_init (&values);    values.free   = free;
-	struct str_map response;  str_map_init (&response);  response.free = free;
+	struct str_map values =   str_map_make (free);
+	struct str_map response = str_map_make (free);
 
-	struct fcgi_nv_parser nv_parser;
-	fcgi_nv_parser_init (&nv_parser);
+	struct fcgi_nv_parser nv_parser = fcgi_nv_parser_make ();
 	nv_parser.output = &values;
 
 	fcgi_nv_parser_push (&nv_parser, parser->content.str, parser->content.len);
 
-	struct str_map_iter iter;
-	str_map_iter_init (&iter, &values);
+	struct str_map_iter iter = str_map_iter_make (&values);
 	while (str_map_iter_next (&iter))
 	{
 		const char *key = iter.link->key;
@@ -297,8 +293,7 @@ fcgi_muxer_on_get_values
 			str_map_set (&response, key, xstrdup ("1"));
 	}
 
-	struct str content;
-	str_init (&content);
+	struct str content = str_make ();
 	fcgi_nv_convert (&response, &content);
 	fcgi_muxer_send (self, FCGI_GET_VALUES_RESULT, parser->request_id,
 		content.str, content.len);
@@ -312,8 +307,8 @@ static void
 fcgi_muxer_on_begin_request
 	(struct fcgi_muxer *self, const struct fcgi_parser *parser)
 {
-	struct msg_unpacker unpacker;
-	msg_unpacker_init (&unpacker, parser->content.str, parser->content.len);
+	struct msg_unpacker unpacker =
+		msg_unpacker_make (parser->content.str, parser->content.len);
 
 	uint16_t role;
 	uint8_t flags;
@@ -435,7 +430,7 @@ fcgi_muxer_on_message (const struct fcgi_parser *parser, void *user_data)
 static void
 fcgi_muxer_init (struct fcgi_muxer *self)
 {
-	fcgi_parser_init (&self->parser);
+	self->parser = fcgi_parser_make ();
 	self->parser.on_message = fcgi_muxer_on_message;
 	self->parser.user_data = self;
 }
@@ -554,8 +549,7 @@ static void
 ws_handler_close (struct ws_handler *self,
 	enum ws_status close_code, const char *reason, size_t len)
 {
-	struct str payload;
-	str_init (&payload);
+	struct str payload = str_make ();
 	str_pack_u16 (&payload, close_code);
 	// XXX: maybe accept a null-terminated string on input? Has to be UTF-8 a/w
 	str_append_data (&payload, reason, len);
@@ -590,8 +584,7 @@ ws_handler_send (struct ws_handler *self,
 	if (!soft_assert (self->state == WS_HANDLER_OPEN))
 		return;
 
-	struct str header;
-	str_init (&header);
+	struct str header = str_make ();
 	str_pack_u8 (&header, 0x80 | (opcode & 0x0F));
 
 	if (len > UINT16_MAX)
@@ -639,8 +632,8 @@ static bool
 ws_handler_on_protocol_close
 	(struct ws_handler *self, const struct ws_parser *parser)
 {
-	struct msg_unpacker unpacker;
-	msg_unpacker_init (&unpacker, parser->input.str, parser->payload_len);
+	struct msg_unpacker unpacker =
+		msg_unpacker_make (parser->input.str, parser->payload_len);
 
 	char *reason = NULL;
 	uint16_t close_code = WS_STATUS_NO_STATUS_RECEIVED;
@@ -775,21 +768,20 @@ ws_handler_init (struct ws_handler *self)
 
 	http_parser_init (&self->hp, HTTP_REQUEST);
 	self->hp.data = self;
-	str_init (&self->field);
-	str_init (&self->value);
-	str_map_init (&self->headers);
-	self->headers.free = free;
+	self->field = str_make ();
+	self->value = str_make ();
+	self->headers = str_map_make (free);
 	self->headers.key_xfrm = tolower_ascii_strxfrm;
-	str_init (&self->url);
+	self->url = str_make ();
 	ev_timer_init (&self->handshake_timeout_watcher,
 		ws_handler_on_handshake_timeout, 0., 0.);
 	self->handshake_timeout_watcher.data = self;
 
-	ws_parser_init (&self->parser);
+	self->parser = ws_parser_make ();
 	self->parser.on_frame_header = ws_handler_on_frame_header;
 	self->parser.on_frame = ws_handler_on_frame;
 	self->parser.user_data = self;
-	str_init (&self->message_data);
+	self->message_data = str_make ();
 
 	ev_timer_init (&self->ping_timer,
 		ws_handler_on_ping_timer, 0., 0.);
@@ -927,8 +919,7 @@ ws_handler_http_responsev (struct ws_handler *self,
 {
 	hard_assert (status != NULL);
 
-	struct str response;
-	str_init (&response);
+	struct str response = str_make ();
 	str_append_printf (&response, "HTTP/1.1 %s\r\n", status);
 
 	while (*fields)
@@ -943,8 +934,7 @@ ws_handler_http_responsev (struct ws_handler *self,
 static void
 ws_handler_http_response (struct ws_handler *self, const char *status, ...)
 {
-	struct strv v;
-	strv_init (&v);
+	struct strv v = strv_make ();
 
 	va_list ap;
 	va_start (ap, status);
@@ -1015,8 +1005,7 @@ ws_handler_finish_handshake (struct ws_handler *self)
 	if (!key)
 		FAIL_HANDSHAKE (HTTP_400_BAD_REQUEST, NULL);
 
-	struct str tmp;
-	str_init (&tmp);
+	struct str tmp = str_make ();
 	bool key_is_valid = base64_decode (key, false, &tmp) && tmp.len == 16;
 	str_free (&tmp);
 	if (!key_is_valid)
@@ -1027,9 +1016,7 @@ ws_handler_finish_handshake (struct ws_handler *self)
 	if (strcmp (version, "13"))
 		FAIL_HANDSHAKE (HTTP_400_BAD_REQUEST, SEC_WS_VERSION ": 13", NULL);
 
-	struct strv fields;
-	strv_init (&fields);
-
+	struct strv fields = strv_make ();
 	strv_append_args (&fields,
 		"Upgrade: websocket",
 		"Connection: Upgrade",
@@ -1181,7 +1168,7 @@ server_context_init (struct server_context *self)
 {
 	memset (self, 0, sizeof *self);
 
-	str_map_init (&self->config);
+	self->config = str_map_make (NULL);
 	simple_config_load_defaults (&self->config, g_config_table);
 	ev_timer_init (&self->quit_timeout_watcher, on_quit_timeout, 3., 0.);
 	self->quit_timeout_watcher.data = self;
@@ -1260,9 +1247,7 @@ validate_json_rpc_content_type (const char *content_type)
 	char *type = NULL;
 	char *subtype = NULL;
 
-	struct str_map parameters;
-	str_map_init (&parameters);
-	parameters.free = free;
+	struct str_map parameters = str_map_make (free);
 	parameters.key_xfrm = tolower_ascii_strxfrm;
 
 	bool result = http_parse_media_type
@@ -1503,8 +1488,7 @@ request_start (struct request *self, struct str_map *headers)
 		}
 
 	// Unable to serve the request
-	struct str response;
-	str_init (&response);
+	struct str response = str_make ();
 	str_append (&response, "Status: 404 Not Found\n");
 	str_append (&response, "Content-Type: text/plain\n\n");
 	self->write_cb (self->user_data, response.str, response.len);
@@ -1536,7 +1520,7 @@ request_handler_json_rpc_try_handle
 		return false;
 
 	struct str *buf = xcalloc (1, sizeof *buf);
-	str_init (buf);
+	*buf = str_make ();
 
 	request->handler_data = buf;
 	*continue_ = true;
@@ -1554,8 +1538,7 @@ request_handler_json_rpc_push
 		return true;
 	}
 
-	struct str response;
-	str_init (&response);
+	struct str response = str_make ();
 	str_append (&response, "Status: 200 OK\n");
 	str_append_printf (&response, "Content-Type: %s\n\n", "application/json");
 	process_json_rpc (request->ctx, buf->str, buf->len, &response);
@@ -1587,12 +1570,10 @@ static char *
 canonicalize_url_path (const char *path)
 {
 	// XXX: this strips any slashes at the end
-	struct strv v;
-	strv_init (&v);
+	struct strv v = strv_make ();
 	cstr_split (path, "/", true, &v);
 
-	struct strv canonical;
-	strv_init (&canonical);
+	struct strv canonical = strv_make ();
 
 	// So that the joined path always begins with a slash
 	strv_append (&canonical, "");
@@ -1672,8 +1653,7 @@ request_handler_static_try_handle
 	FILE *fp = fopen (path, "rb");
 	if (!fp)
 	{
-		struct str response;
-		str_init (&response);
+		struct str response = str_make ();
 		str_append (&response, "Status: 404 Not Found\n");
 		str_append (&response, "Content-Type: text/plain\n\n");
 		str_append_printf (&response,
@@ -1699,8 +1679,7 @@ request_handler_static_try_handle
 	if (!mime_type)
 		mime_type = xstrdup ("application/octet_stream");
 
-	struct str response;
-	str_init (&response);
+	struct str response = str_make ();
 	str_append (&response, "Status: 200 OK\n");
 	str_append_printf (&response, "Content-Type: %s\n\n", mime_type);
 	request->write_cb (request->user_data, response.str, response.len);
@@ -1878,7 +1857,7 @@ client_init (EV_P_ struct client *self, int sock_fd)
 
 	memset (self, 0, sizeof *self);
 	self->ctx = ctx;
-	write_queue_init (&self->write_queue);
+	self->write_queue = write_queue_make ();
 
 	set_blocking (sock_fd, false);
 	self->socket_fd = sock_fd;
@@ -2119,7 +2098,7 @@ client_scgi_create (EV_P_ int sock_fd)
 	self->request.close_cb       = client_scgi_close_cb;
 	self->request.user_data      = self;
 
-	scgi_parser_init (&self->parser);
+	self->parser = scgi_parser_make ();
 	self->parser.on_headers_read = client_scgi_on_headers_read;
 	self->parser.on_content      = client_scgi_on_content;
 	self->parser.user_data       = self;
@@ -2145,8 +2124,7 @@ client_ws_on_message (void *user_data,
 		return false;
 	}
 
-	struct str response;
-	str_init (&response);
+	struct str response = str_make ();
 	process_json_rpc (self->client.ctx, data, len, &response);
 	if (response.len)
 		ws_handler_send (&self->handler,
@@ -2410,9 +2388,9 @@ setup_listen_fds (struct server_context *ctx, struct error **e)
 		.ai_flags = AI_PASSIVE,
 	};
 
-	struct strv ports_fcgi;  strv_init (&ports_fcgi);
-	struct strv ports_scgi;  strv_init (&ports_scgi);
-	struct strv ports_ws;    strv_init (&ports_ws);
+	struct strv ports_fcgi = strv_make ();
+	struct strv ports_scgi = strv_make ();
+	struct strv ports_ws   = strv_make ();
 
 	get_ports_from_config (ctx, "port_fastcgi", &ports_fcgi);
 	get_ports_from_config (ctx, "port_scgi",    &ports_scgi);
@@ -2588,8 +2566,8 @@ parse_program_arguments (int argc, char **argv)
 		{ 0, NULL, NULL, 0, NULL }
 	};
 
-	struct opt_handler oh;
-	opt_handler_init (&oh, argc, argv, opts, NULL, "JSON-RPC 2.0 demo server.");
+	struct opt_handler oh =
+		opt_handler_make (argc, argv, opts, NULL, "JSON-RPC 2.0 demo server.");
 
 	int c;
 	while ((c = opt_handler_get (&oh)) != -1)
