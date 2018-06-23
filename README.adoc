@@ -29,7 +29,7 @@ Build dependencies: CMake, pkg-config, help2man, libmagic,
                     liberty (included), http-parser (included) +
 Runtime dependencies: libev, Jansson
 
- $ git clone --recursive https://github.com/pjanouch/acid.git
+ $ git clone --recursive https://git.janouch.name/p/acid.git
  $ mkdir acid/build
  $ cd acid/build
  $ cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Debug
@@ -53,11 +53,11 @@ TODO.  The main application hasn't been written yet.
 
 Contributing and Support
 ------------------------
-Use this project's GitHub to report any bugs, request features, or submit pull
-requests.  If you want to discuss this project, or maybe just hang out with
-the developer, feel free to join me at irc://irc.janouch.name, channel #dev.
+Use https://git.janouch.name/p/acid to report any bugs, request features,
+or submit pull requests.  `git send-email` is tolerated.  If you want to discuss
+the project, feel free to join me at ircs://irc.janouch.name, channel #dev.
 
-Bitcoin donations: 12r5uEWEgcHC46xd64tt3hHt9EUvYYDHe9
+Bitcoin donations are accepted at: 12r5uEWEgcHC46xd64tt3hHt9EUvYYDHe9
 
 License
 -------
