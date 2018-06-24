@@ -711,7 +711,7 @@ ws_handler_on_frame (void *user_data, const struct ws_parser *parser)
 		return true;
 
 	if (self->message_opcode == WS_OPCODE_TEXT
-	 && !utf8_validate (self->parser.input.str, self->parser.input.len))
+	 && !utf8_validate (self->message_data.str, self->message_data.len))
 	{
 		ws_handler_fail (self, WS_STATUS_INVALID_PAYLOAD_DATA);
 		return false;
