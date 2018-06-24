@@ -38,11 +38,7 @@ the higher-level protocol (the "Sec-Ws-Protocol" HTTP field).
 Packages
 --------
 Regular releases are sporadic.  git master should be stable enough.  You can get
-a package with the latest development version from Archlinux's AUR, or from
-openSUSE Build Service for the rest of mainstream distributions.  Consult the
-list of repositories and their respective links at:
-
-https://build.opensuse.org/project/repositories/home:pjanouch:git
+a package with the latest development version from Archlinux's AUR.
 
 Building and Usage
 ------------------
@@ -51,7 +47,7 @@ Build dependencies: CMake, pkg-config, help2man,
 Runtime dependencies: libev, Jansson, cURL, openssl,
                       readline or libedit >= 2013-07-12,
 
- $ git clone --recursive https://github.com/pjanouch/json-rpc-shell.git
+ $ git clone --recursive https://git.janouch.name/p/json-rpc-shell.git
  $ mkdir json-rpc-shell/build
  $ cd json-rpc-shell/build
  $ cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Debug
@@ -73,11 +69,11 @@ Run the program with `--help` to obtain usage information.
 
 Contributing and Support
 ------------------------
-Use this project's GitHub to report any bugs, request features, or submit pull
-requests.  If you want to discuss this project, or maybe just hang out with
-the developer, feel free to join me at irc://irc.janouch.name, channel #dev.
+Use https://git.janouch.name/p/json-rpc-shell to report bugs, request features,
+or submit pull requests.  `git send-email` is tolerated.  If you want to discuss
+the project, feel free to join me at ircs://irc.janouch.name, channel #dev.
 
-Bitcoin donations: 12r5uEWEgcHC46xd64tt3hHt9EUvYYDHe9
+Bitcoin donations are accepted at: 12r5uEWEgcHC46xd64tt3hHt9EUvYYDHe9
 
 License
 -------
