@@ -925,6 +925,19 @@ ws_handler_http_responsev (struct ws_handler *self,
 	while (*fields)
 		str_append_printf (&response, "%s\r\n", *fields++);
 
+	time_t now = time (NULL);
+	struct tm ts;
+	gmtime_r (&now, &ts);
+
+	// See RFC 7231, 7.1.1.2. Date
+	const char *dow[] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+	const char *moy[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+		"Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+	str_append_printf (&response,
+		"Date: %s, %02d %s %04d %02d:%02d:%02d GMT\r\n",
+		dow[ts.tm_wday], ts.tm_mday, moy[ts.tm_mon], ts.tm_year + 1900,
+		ts.tm_hour, ts.tm_min, ts.tm_sec);
+
 	str_append (&response, "Server: "
 		PROGRAM_NAME "/" PROGRAM_VERSION "\r\n\r\n");
 	self->write_cb (self->user_data, response.str, response.len);
