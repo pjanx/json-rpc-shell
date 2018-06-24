@@ -81,10 +81,5 @@ Bitcoin donations: 12r5uEWEgcHC46xd64tt3hHt9EUvYYDHe9
 
 License
 -------
-'json-rpc-shell' is written by Přemysl Janouch <p.janouch@gmail.com>.
-
-You may use the software under the terms of the ISC license, the text of which
-is included within the package, or, at your option, you may relicense the work
-under the MIT or the Modified BSD License, as listed at the following site:
-
-http://www.gnu.org/licenses/license-list.html
+This software is released under the terms of the 0BSD license, the text of which
+is included within the package along with the list of authors.
