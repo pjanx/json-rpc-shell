@@ -2285,7 +2285,8 @@ on_client_available (EV_P_ ev_io *watcher, int revents)
 			listener->create (EV_A_ sock_fd);
 		else if (errno == EAGAIN)
 			return;
-		else if (errno != EINTR && errno != ECONNABORTED)
+		else if (errno != EINTR && errno != EMFILE
+		 && errno != ECONNRESET && errno != ECONNABORTED)
 			break;
 	}
 
