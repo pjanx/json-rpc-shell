@@ -418,6 +418,7 @@ fcgi_muxer_on_message (const struct fcgi_parser *parser, void *user_data)
 	if (parser->type >= N_ELEMENTS (handlers)
 	 || !(handler = handlers[parser->type]))
 	{
+		// Responding in this way even to application records, unspecified
 		uint8_t content[8] = { parser->type };
 		fcgi_muxer_send (self, FCGI_UNKNOWN_TYPE, parser->request_id,
 			content, sizeof content);
@@ -1303,8 +1304,9 @@ json_rpc_handler_info_cmp (const void *first, const void *second)
 		((struct json_rpc_handler_info *) second)->method_name);
 }
 
-// TODO: a method that queues up a ping over IRC: this has to be owned by the
-//   server context as a background job that removes itself upon completion.
+// TODO: a method that sends a response after a certain number of seconds.
+//   This has to be owned by the server context as a background job that
+//   removes itself upon completion.
 
 static json_t *
 json_rpc_ping (struct server_context *ctx, json_t *params)
@@ -1479,6 +1481,8 @@ request_finish (struct request *self)
 	self->close_cb (self->user_data);
 }
 
+/// Starts processing a request.  Returns false if no further action is to be
+/// done and the request should be finished.
 static bool
 request_start (struct request *self, struct str_map *headers)
 {
@@ -1489,7 +1493,7 @@ request_start (struct request *self, struct str_map *headers)
 	//
 	//   However that might cause some stuff to be done twice.
 	//
-	//   Another way we could get rid off the continue_ argument is via adding
+	//   Another way we could get rid of the continue_ argument is via adding
 	//   some way of marking the request as finished from within the handler.
 
 	bool continue_ = true;
@@ -1550,6 +1554,9 @@ request_handler_json_rpc_push
 		str_append_data (buf, data, len);
 		return true;
 	}
+
+	// TODO: check buf.len against CONTENT_LENGTH; if it's less, then the
+	//   client hasn't been successful in transferring all of its data
 
 	struct str response = str_make ();
 	str_append (&response, "Status: 200 OK\n");
@@ -1845,6 +1852,8 @@ static void
 on_client_ready (EV_P_ ev_io *watcher, int revents)
 {
 	struct client *client = watcher->data;
+	// XXX: although read and write are in a sequence, if we create response
+	//   data, we'll still likely need to go back to the event loop.
 
 	if (revents & EV_READ)
 		if (!client_read_loop (EV_A_ client, watcher))
@@ -2488,6 +2497,9 @@ on_termination_signal (EV_P_ ev_signal *handle, int revents)
 	(void) handle;
 	(void) revents;
 
+	// TODO: consider quitting right away if already quitting;
+	//   considering that this may already happen in timeout, it should be OK;
+	//   see on_quit_timeout, just destroy all clients
 	initiate_quit (ctx);
 }
 
