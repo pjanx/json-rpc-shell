@@ -145,14 +145,18 @@ fcgi_muxer_send (struct fcgi_muxer *self,
 	hard_assert (len <= UINT16_MAX);
 
 	struct str message = str_make ();
+	static char zeroes[8];
+	size_t padding = -len & 7;
 
 	str_pack_u8  (&message, FCGI_VERSION_1);
 	str_pack_u8  (&message, type);
 	str_pack_u16 (&message, request_id);
-	str_pack_u16 (&message, len);  // content length
-	str_pack_u8  (&message, 0);    // padding length
+	str_pack_u16 (&message, len);     // content length
+	str_pack_u8  (&message, padding); // padding length
+	str_pack_u8  (&message, 0);       // reserved
 
 	str_append_data (&message, data, len);
+	str_append_data (&message, zeroes, padding);
 
 	// XXX: we should probably have another write_cb that assumes ownership
 	self->write_cb (self->user_data, message.str, message.len);
