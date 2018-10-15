@@ -769,7 +769,9 @@ ws_handler_on_ping_timer (EV_P_ ev_timer *watcher, int revents)
 static void
 ws_handler_on_close_timeout (EV_P_ ev_timer *watcher, int revents)
 {
+	(void) revents;
 	struct ws_handler *self = watcher->data;
+
 	// TODO: anything else to do here? Invalidate our state?
 	if (self->close_cb)
 		self->close_cb (self->user_data);
@@ -778,6 +780,7 @@ ws_handler_on_close_timeout (EV_P_ ev_timer *watcher, int revents)
 static void
 ws_handler_on_handshake_timeout (EV_P_ ev_timer *watcher, int revents)
 {
+	(void) revents;
 	struct ws_handler *self = watcher->data;
 	// TODO
 }
@@ -1034,9 +1037,12 @@ ws_handler_finish_handshake (struct ws_handler *self)
 		FAIL_HANDSHAKE (HTTP_400_BAD_REQUEST, NULL);
 
 	// Okay, we're finally past the basic HTTP/1.1 stuff
-	const char *key      = str_map_find (&self->headers, SEC_WS_KEY);
-	const char *version  = str_map_find (&self->headers, SEC_WS_VERSION);
-	const char *protocol = str_map_find (&self->headers, SEC_WS_PROTOCOL);
+	const char *key        = str_map_find (&self->headers, SEC_WS_KEY);
+	const char *version    = str_map_find (&self->headers, SEC_WS_VERSION);
+/*
+	const char *protocol   = str_map_find (&self->headers, SEC_WS_PROTOCOL);
+	const char *extensions = str_map_find (&self->headers, SEC_WS_EXTENSIONS);
+*/
 
 	if (!key)
 		FAIL_HANDSHAKE (HTTP_400_BAD_REQUEST, NULL);
@@ -1063,7 +1069,7 @@ ws_handler_finish_handshake (struct ws_handler *self)
 		xstrdup_printf (SEC_WS_ACCEPT ": %s", response_key));
 	free (response_key);
 
-	// TODO: check and set Sec-Websocket-{Extensions,Protocol}
+	// TODO: make it possible to choose Sec-Websocket-{Extensions,Protocol}
 
 	ws_handler_http_responsev (self,
 		HTTP_101_SWITCHING_PROTOCOLS, fields.vector);
