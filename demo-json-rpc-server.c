@@ -44,6 +44,9 @@
 
 enum { PIPE_READ, PIPE_WRITE };
 
+#define FIND_CONTAINER(name, pointer, type, member) \
+	type *name = CONTAINER_OF (pointer, type, member)
+
 // --- libev helpers -----------------------------------------------------------
 
 static bool
@@ -126,14 +129,12 @@ struct fcgi_muxer
 
 	// TODO: bool quitting; that causes us to reject all requests?
 
-	void (*write_cb) (void *user_data, const void *data, size_t len);
-	void (*close_cb) (void *user_data);
+	void (*write_cb) (struct fcgi_muxer *, const void *data, size_t len);
+	void (*close_cb) (struct fcgi_muxer *);
 
-	void *(*request_start_cb) (void *user_data, struct fcgi_request *request);
+	void *(*request_start_cb) (struct fcgi_muxer *, struct fcgi_request *);
 	void (*request_push_cb) (void *handler_data, const void *data, size_t len);
 	void (*request_destroy_cb) (void *handler_data);
-
-	void *user_data;                    ///< User data for callbacks
 
 	/// Requests assigned to request IDs (may not be FCGI_NULL_REQUEST_ID)
 	struct fcgi_request *requests[1 << 8];
@@ -160,7 +161,7 @@ fcgi_muxer_send (struct fcgi_muxer *self,
 	str_append_data (&message, zeroes, padding);
 
 	// XXX: we should probably have another write_cb that assumes ownership
-	self->write_cb (self->user_data, message.str, message.len);
+	self->write_cb (self, message.str, message.len);
 	str_free (&message);
 }
 
@@ -210,8 +211,7 @@ fcgi_request_push_params
 	{
 		// TODO: probably check the state of the header parser
 		// TODO: request_start() can return false, end the request here?
-		self->handler_data = self->muxer->request_start_cb
-			(self->muxer->user_data, self);
+		self->handler_data = self->muxer->request_start_cb (self->muxer, self);
 		self->state = FCGI_REQUEST_STDIN;
 	}
 }
@@ -532,10 +532,10 @@ struct ws_handler
 	//   This may render "on_connected" unnecessary.
 
 	/// Called after successfuly connecting (handshake complete)
-	bool (*on_connected) (void *user_data);
+	bool (*on_connected) (struct ws_handler *);
 
 	/// Called upon reception of a single full message
-	bool (*on_message) (void *user_data,
+	bool (*on_message) (struct ws_handler *,
 		enum ws_opcode type, const void *data, size_t len);
 
 	/// The connection is about to close.  @a close_code may, or may not, be one
@@ -544,17 +544,15 @@ struct ws_handler
 	//   receive a notification about the connection being closed because of
 	//   an error (recv()) returns -1, and call on_close() in reaction.
 	//   Actually, calling push() could work pretty fine for this.
-	void (*on_close) (void *user_data, int close_code, const char *reason);
+	void (*on_close) (struct ws_handler *, int close_code, const char *reason);
 
 	// Virtual method callbacks:
 
 	/// Write a chunk of data to the stream
-	void (*write_cb) (void *user_data, const void *data, size_t len);
+	void (*write_cb) (struct ws_handler *, const void *data, size_t len);
 
 	/// Close the connection
-	void (*close_cb) (void *user_data);
-
-	void *user_data;                    ///< User data for callbacks
+	void (*close_cb) (struct ws_handler *);
 };
 
 static void
@@ -569,8 +567,8 @@ ws_handler_send_control (struct ws_handler *self,
 	}
 
 	uint8_t header[2] = { 0x80 | (opcode & 0x0F), len };
-	self->write_cb (self->user_data, header, sizeof header);
-	self->write_cb (self->user_data, data, len);
+	self->write_cb (self, header, sizeof header);
+	self->write_cb (self, data, len);
 }
 
 static void
@@ -585,7 +583,7 @@ ws_handler_close (struct ws_handler *self,
 
 	// Close initiated by us; the reason is null-terminated within `payload'
 	if (self->on_close)
-		self->on_close (self->user_data, close_code, payload.str + 2);
+		self->on_close (self, close_code, payload.str + 2);
 
 	self->state = WS_HANDLER_CLOSING;
 	str_free (&payload);
@@ -628,8 +626,8 @@ ws_handler_send (struct ws_handler *self,
 	else
 		str_pack_u8 (&header, len);
 
-	self->write_cb (self->user_data, header.str, header.len);
-	self->write_cb (self->user_data, data, len);
+	self->write_cb (self, header.str, header.len);
+	self->write_cb (self, data, len);
 	str_free (&header);
 }
 
@@ -680,7 +678,7 @@ ws_handler_on_protocol_close
 		ws_handler_send_control (self, WS_OPCODE_CLOSE,
 			parser->input.str, parser->payload_len);
 		if (self->on_close)
-			self->on_close (self->user_data, close_code, reason);
+			self->on_close (self, close_code, reason);
 	}
 
 	free (reason);
@@ -747,7 +745,7 @@ ws_handler_on_frame (void *user_data, const struct ws_parser *parser)
 
 	bool result = true;
 	if (self->on_message)
-		result = self->on_message (self->user_data, self->message_opcode,
+		result = self->on_message (self, self->message_opcode,
 			self->message_data.str, self->message_data.len);
 	str_reset (&self->message_data);
 	return result;
@@ -779,7 +777,7 @@ ws_handler_on_close_timeout (EV_P_ ev_timer *watcher, int revents)
 
 	// TODO: anything else to do here? Invalidate our state?
 	if (self->close_cb)
-		self->close_cb (self->user_data);
+		self->close_cb (self);
 }
 
 static void
@@ -971,7 +969,7 @@ ws_handler_http_responsev (struct ws_handler *self,
 
 	str_append (&response, "Server: "
 		PROGRAM_NAME "/" PROGRAM_VERSION "\r\n\r\n");
-	self->write_cb (self->user_data, response.str, response.len);
+	self->write_cb (self, response.str, response.len);
 	str_free (&response);
 }
 
@@ -1110,8 +1108,7 @@ ws_handler_push (struct ws_handler *self, const void *data, size_t len)
 		if (self->state == WS_HANDLER_OPEN)
 		{
 			if (self->on_close)
-				self->on_close (self->user_data,
-					WS_STATUS_ABNORMAL_CLOSURE, "");
+				self->on_close (self, WS_STATUS_ABNORMAL_CLOSURE, "");
 		}
 		else
 		{
@@ -1154,7 +1151,7 @@ ws_handler_push (struct ws_handler *self, const void *data, size_t len)
 
 		self->state = WS_HANDLER_OPEN;
 		if (self->on_connected)
-			return self->on_connected (self->user_data);
+			return self->on_connected (self);
 		return true;
 	}
 
@@ -1473,13 +1470,11 @@ struct request
 	void *handler_data;                 ///< User data for the handler
 
 	/// Callback to write some CGI response data to the output
-	void (*write_cb) (void *user_data, const void *data, size_t len);
+	void (*write_cb) (struct request *, const void *data, size_t len);
 
 	/// Callback to close the connection.
 	/// CALLING THIS MAY CAUSE THE REQUEST TO BE DESTROYED.
-	void (*close_cb) (void *user_data);
-
-	void *user_data;                    ///< User data argument for callbacks
+	void (*close_cb) (struct request *);
 };
 
 /// An interface to detect and handle specific kinds of CGI requests.
@@ -1523,7 +1518,7 @@ request_free (struct request *self)
 static void
 request_finish (struct request *self)
 {
-	self->close_cb (self->user_data);
+	self->close_cb (self);
 }
 
 /// Starts processing a request.  Returns false if no further action is to be
@@ -1553,7 +1548,7 @@ request_start (struct request *self, struct str_map *headers)
 	struct str response = str_make ();
 	str_append (&response, "Status: 404 Not Found\n");
 	str_append (&response, "Content-Type: text/plain\n\n");
-	self->write_cb (self->user_data, response.str, response.len);
+	self->write_cb (self, response.str, response.len);
 	str_free (&response);
 	return false;
 }
@@ -1608,7 +1603,7 @@ request_handler_json_rpc_push
 	str_append (&response, "Status: 200 OK\n");
 	str_append_printf (&response, "Content-Type: %s\n\n", "application/json");
 	process_json_rpc (request->ctx, buf->str, buf->len, &response);
-	request->write_cb (request->user_data, response.str, response.len);
+	request->write_cb (request, response.str, response.len);
 	str_free (&response);
 	return false;
 }
@@ -1724,7 +1719,7 @@ request_handler_static_try_handle
 		str_append (&response, "Content-Type: text/plain\n\n");
 		str_append_printf (&response,
 			"File %s was not found on this server\n", suffix);
-		request->write_cb (request->user_data, response.str, response.len);
+		request->write_cb (request, response.str, response.len);
 		str_free (&response);
 
 		free (suffix);
@@ -1748,17 +1743,17 @@ request_handler_static_try_handle
 	struct str response = str_make ();
 	str_append (&response, "Status: 200 OK\n");
 	str_append_printf (&response, "Content-Type: %s\n\n", mime_type);
-	request->write_cb (request->user_data, response.str, response.len);
+	request->write_cb (request, response.str, response.len);
 	str_free (&response);
 	free (mime_type);
 
 	// Write the chunk we've used to help us with magic detection;
 	// obviously we have to do it after we've written the headers
 	if (len)
-		request->write_cb (request->user_data, buf, len);
+		request->write_cb (request, buf, len);
 
 	while ((len = fread (buf, 1, sizeof buf, fp)))
-		request->write_cb (request->user_data, buf, len);
+		request->write_cb (request, buf, len);
 	fclose (fp);
 
 	// TODO: this should rather not be returned all at once but in chunks;
@@ -1962,28 +1957,29 @@ struct client_fcgi_request
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 static void
-client_fcgi_request_write_cb (void *user_data, const void *data, size_t len)
+client_fcgi_request_write_cb (struct request *req, const void *data, size_t len)
 {
-	struct client_fcgi_request *request = user_data;
-	fcgi_request_write (request->fcgi_request, data, len);
+	FIND_CONTAINER (self, req, struct client_fcgi_request, request);
+	fcgi_request_write (self->fcgi_request, data, len);
 }
 
 static void
-client_fcgi_request_close_cb (void *user_data)
+client_fcgi_request_close_cb (struct request *req)
 {
-	struct client_fcgi_request *request = user_data;
+	FIND_CONTAINER (self, req, struct client_fcgi_request, request);
 	// No more data to send, terminate the substream/request
 	// XXX: this will most probably end up with client_fcgi_request_destroy(),
 	//   we might or might not need to defer this action
-	fcgi_request_finish (request->fcgi_request);
+	fcgi_request_finish (self->fcgi_request);
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 static void *
-client_fcgi_request_start (void *user_data, struct fcgi_request *fcgi_request)
+client_fcgi_request_start
+	(struct fcgi_muxer *mux, struct fcgi_request *fcgi_request)
 {
-	struct client_fcgi *self = user_data;
+	FIND_CONTAINER (self, mux, struct client_fcgi, muxer);
 
 	// TODO: what if the request is aborted by ;
 	struct client_fcgi_request *request = xcalloc (1, sizeof *request);
@@ -1992,7 +1988,6 @@ client_fcgi_request_start (void *user_data, struct fcgi_request *fcgi_request)
 	request->request.ctx = self->client.ctx;
 	request->request.write_cb = client_fcgi_request_write_cb;
 	request->request.close_cb = client_fcgi_request_close_cb;
-	request->request.user_data = request;
 	return request;
 }
 
@@ -2014,16 +2009,16 @@ client_fcgi_request_destroy (void *handler_data)
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 static void
-client_fcgi_write_cb (void *user_data, const void *data, size_t len)
+client_fcgi_write_cb (struct fcgi_muxer *mux, const void *data, size_t len)
 {
-	struct client_fcgi *self = user_data;
+	FIND_CONTAINER (self, mux, struct client_fcgi, muxer);
 	client_write (&self->client, data, len);
 }
 
 static void
-client_fcgi_close_cb (void *user_data)
+client_fcgi_close_cb (struct fcgi_muxer *mux)
 {
-	struct client_fcgi *self = user_data;
+	FIND_CONTAINER (self, mux, struct client_fcgi, muxer);
 	// FIXME: we should probably call something like client_shutdown(),
 	//   which may have an argument whether we should really use close()
 	client_destroy (&self->client);
@@ -2076,7 +2071,6 @@ client_fcgi_create (EV_P_ int sock_fd)
 	self->muxer.request_start_cb   = client_fcgi_request_start;
 	self->muxer.request_push_cb    = client_fcgi_request_push;
 	self->muxer.request_destroy_cb = client_fcgi_request_destroy;
-	self->muxer.user_data          = self;
 	return &self->client;
 }
 
@@ -2090,17 +2084,17 @@ struct client_scgi
 };
 
 static void
-client_scgi_write_cb (void *user_data, const void *data, size_t len)
+client_scgi_write_cb (struct request *req, const void *data, size_t len)
 {
-	struct client_scgi *self = user_data;
+	FIND_CONTAINER (self, req, struct client_scgi, request);
 	client_write (&self->client, data, len);
 }
 
 static void
-client_scgi_close_cb (void *user_data)
+client_scgi_close_cb (struct request *req)
 {
 	// NOTE: this rather really means "close me [the request]"
-	struct client_scgi *self = user_data;
+	FIND_CONTAINER (self, req, struct client_scgi, request);
 	// FIXME: we should probably call something like client_shutdown(),
 	//   which may have an argument whether we should really use close()
 	client_destroy (&self->client);
@@ -2167,7 +2161,6 @@ client_scgi_create (EV_P_ int sock_fd)
 	self->request.ctx            = self->client.ctx;
 	self->request.write_cb       = client_scgi_write_cb;
 	self->request.close_cb       = client_scgi_close_cb;
-	self->request.user_data      = self;
 
 	self->parser = scgi_parser_make ();
 	self->parser.on_headers_read = client_scgi_on_headers_read;
@@ -2185,10 +2178,10 @@ struct client_ws
 };
 
 static bool
-client_ws_on_message (void *user_data,
+client_ws_on_message (struct ws_handler *handler,
 	enum ws_opcode type, const void *data, size_t len)
 {
-	struct client_ws *self = user_data;
+	FIND_CONTAINER (self, handler, struct client_ws, handler);
 	if (type != WS_OPCODE_TEXT)
 	{
 		ws_handler_fail (&self->handler, WS_STATUS_UNSUPPORTED_DATA);
@@ -2205,16 +2198,16 @@ client_ws_on_message (void *user_data,
 }
 
 static void
-client_ws_write_cb (void *user_data, const void *data, size_t len)
+client_ws_write_cb (struct ws_handler *handler, const void *data, size_t len)
 {
-	struct client *client = user_data;
-	client_write (client, data, len);
+	FIND_CONTAINER (self, handler, struct client_ws, handler);
+	client_write (&self->client, data, len);
 }
 
 static void
-client_ws_close_cb (void *user_data)
+client_ws_close_cb (struct ws_handler *handler)
 {
-	struct client_ws *self = user_data;
+	FIND_CONTAINER (self, handler, struct client_ws, handler);
 	// FIXME: we should probably call something like client_shutdown(),
 	//   which may have an argument whether we should really use close()
 	client_destroy (&self->client);
@@ -2261,7 +2254,6 @@ client_ws_create (EV_P_ int sock_fd)
 	self->handler.on_message = client_ws_on_message;
 	self->handler.write_cb   = client_ws_write_cb;
 	self->handler.close_cb   = client_ws_close_cb;
-	self->handler.user_data  = self;
 
 	// One mebibyte seems to be a reasonable value
 	self->handler.max_payload_len = 1 << 10;
