@@ -2257,6 +2257,8 @@ client_ws_create (EV_P_ int sock_fd)
 
 	// One mebibyte seems to be a reasonable value
 	self->handler.max_payload_len = 1 << 10;
+
+	ws_handler_start (&self->handler);
 	return &self->client;
 }
 
