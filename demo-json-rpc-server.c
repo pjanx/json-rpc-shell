@@ -546,7 +546,7 @@ struct ws_handler
 	//   Actually, calling push() could work pretty fine for this.
 	void (*on_close) (void *user_data, int close_code, const char *reason);
 
-	// Method callbacks:
+	// Virtual method callbacks:
 
 	/// Write a chunk of data to the stream
 	void (*write_cb) (void *user_data, const void *data, size_t len);
@@ -1464,11 +1464,12 @@ process_json_rpc (struct server_context *ctx,
 /// @defgroup Requests
 /// @{
 
+/// A generic CGI request abstraction, writing data indirectly through callbacks
 struct request
 {
 	struct server_context *ctx;         ///< Server context
 
-	struct request_handler *handler;    ///< Current request handler
+	struct request_handler *handler;    ///< Assigned request handler
 	void *handler_data;                 ///< User data for the handler
 
 	/// Callback to write some CGI response data to the output
@@ -1481,20 +1482,25 @@ struct request
 	void *user_data;                    ///< User data argument for callbacks
 };
 
+/// An interface to detect and handle specific kinds of CGI requests.
+/// The server walks through a list of them until it finds one that can serve
+/// a particular request.  If unsuccessful, the remote client gets a 404
+/// (the default handling).
 struct request_handler
 {
 	LIST_HEADER (struct request_handler)
 
-	/// Install ourselves as the handler for the request if applicable.
-	/// Set @a continue_ to false if further processing should be stopped.
+	/// Install ourselves as the handler for the request, if applicable.
+	/// Sets @a continue_ to false if further processing should be stopped,
+	/// meaning the request has already been handled.
 	bool (*try_handle) (struct request *request,
 		struct str_map *headers, bool *continue_);
 
 	/// Handle incoming data.
-	/// Return false if further processing should be stopped.
+	/// Returns false if there is no more processing to be done.
 	bool (*push_cb) (struct request *request, const void *data, size_t len);
 
-	/// Destroy the handler
+	/// Destroy the handler's data stored in the request object
 	void (*destroy_cb) (struct request *request);
 };
 
@@ -1792,6 +1798,8 @@ struct request_handler g_request_handler_static =
 
 // --- Client communication handlers -------------------------------------------
 
+/// A virtual class for client connections coming either from the web server
+/// or directly from the end-client, depending on the protocol in use
 struct client
 {
 	LIST_HEADER (struct client)
@@ -1808,6 +1816,7 @@ struct client
 	struct client_vtable *vtable;       ///< Client behaviour
 };
 
+/// The concrete behaviour to serve a particular client's requests
 struct client_vtable
 {
 	/// Attempt a graceful shutdown
