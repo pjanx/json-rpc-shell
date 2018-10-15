@@ -96,6 +96,8 @@ log_message_syslog (void *user_data, const char *quote, const char *fmt,
 }
 
 // --- FastCGI -----------------------------------------------------------------
+/// @defgroup FastCGI
+/// @{
 
 enum fcgi_request_state
 {
@@ -470,7 +472,10 @@ fcgi_muxer_push (struct fcgi_muxer *self, const void *data, size_t len)
 	fcgi_parser_push (&self->parser, data, len);
 }
 
+/// @}
 // --- WebSockets --------------------------------------------------------------
+/// @defgroup WebSockets
+/// @{
 
 // WebSockets aren't CGI-compatible, therefore we must handle the initial HTTP
 // handshake ourselves.  Luckily it's not too much of a bother with http-parser.
@@ -1169,6 +1174,7 @@ ws_handler_push (struct ws_handler *self, const void *data, size_t len)
 	return true;
 }
 
+/// @}
 // --- Server ------------------------------------------------------------------
 
 static struct simple_config_item g_config_table[] =
@@ -1229,6 +1235,8 @@ server_context_free (struct server_context *self)
 }
 
 // --- JSON-RPC ----------------------------------------------------------------
+/// @defgroup JSON-RPC
+/// @{
 
 #define JSON_RPC_ERROR_TABLE(XX)                                               \
 	XX (-32700, PARSE_ERROR,      "Parse error")                               \
@@ -1451,7 +1459,10 @@ process_json_rpc (struct server_context *ctx,
 	}
 }
 
+/// @}
 // --- Requests ----------------------------------------------------------------
+/// @defgroup Requests
+/// @{
 
 struct request
 {
@@ -1551,6 +1562,7 @@ request_push (struct request *self, const void *data, size_t len)
 	return self->handler->push_cb (self, data, len);
 }
 
+/// @}
 // --- Requests handlers -------------------------------------------------------
 
 static bool
