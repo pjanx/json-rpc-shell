@@ -276,7 +276,14 @@ static void
 fcgi_muxer_on_get_values
 	(struct fcgi_muxer *self, const struct fcgi_parser *parser)
 {
-	struct str_map values =   str_map_make (free);
+	if (parser->request_id != FCGI_NULL_REQUEST_ID)
+	{
+		print_debug ("FastCGI: ignoring invalid %s message",
+			STRINGIFY (FCGI_GET_VALUES));
+		return;
+	}
+
+	struct str_map values   = str_map_make (free);
 	struct str_map response = str_map_make (free);
 
 	struct fcgi_nv_parser nv_parser = fcgi_nv_parser_make ();
@@ -330,6 +337,13 @@ fcgi_muxer_on_begin_request
 		return;
 	}
 
+	struct fcgi_request *request = self->requests[parser->request_id];
+	if (parser->request_id == FCGI_NULL_REQUEST_ID || request)
+	{
+		// TODO: fail
+		return;
+	}
+
 	// We can only act as a responder, reject everything else up front
 	if (role != FCGI_RESPONDER)
 	{
@@ -338,10 +352,11 @@ fcgi_muxer_on_begin_request
 		return;
 	}
 
-	struct fcgi_request *request = self->requests[parser->request_id];
-	if (request)
+	// TODO: also send OVERLOADED when shutting down?
+	if (parser->request_id >= N_ELEMENTS (self->requests))
 	{
-		// TODO: fail
+		fcgi_muxer_send_end_request (self,
+			parser->request_id, 0, FCGI_OVERLOADED);
 		return;
 	}
 
@@ -359,21 +374,22 @@ fcgi_muxer_on_abort_request
 	(struct fcgi_muxer *self, const struct fcgi_parser *parser)
 {
 	struct fcgi_request *request = self->requests[parser->request_id];
-	if (!request)
+	if (parser->request_id == FCGI_NULL_REQUEST_ID || !request)
 	{
 		print_debug ("FastCGI: received %s for an unknown request",
 			STRINGIFY (FCGI_ABORT_REQUEST));
 		return;
 	}
 
-	// TODO: abort the request: let it somehow produce FCGI_END_REQUEST
+	// TODO: abort the request: let it somehow produce FCGI_END_REQUEST,
+	// make sure to send an stdout EOF record
 }
 
 static void
 fcgi_muxer_on_params (struct fcgi_muxer *self, const struct fcgi_parser *parser)
 {
 	struct fcgi_request *request = self->requests[parser->request_id];
-	if (!request)
+	if (parser->request_id == FCGI_NULL_REQUEST_ID || !request)
 	{
 		print_debug ("FastCGI: received %s for an unknown request",
 			STRINGIFY (FCGI_PARAMS));
@@ -388,7 +404,7 @@ static void
 fcgi_muxer_on_stdin (struct fcgi_muxer *self, const struct fcgi_parser *parser)
 {
 	struct fcgi_request *request = self->requests[parser->request_id];
-	if (!request)
+	if (parser->request_id == FCGI_NULL_REQUEST_ID || !request)
 	{
 		print_debug ("FastCGI: received %s for an unknown request",
 			STRINGIFY (FCGI_STDIN));
