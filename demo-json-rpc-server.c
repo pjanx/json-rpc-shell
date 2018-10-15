@@ -124,10 +124,6 @@ struct fcgi_muxer
 
 	// TODO: bool quitting; that causes us to reject all requests?
 
-	/// Requests assigned to request IDs
-	// TODO: allocate this dynamically
-	struct fcgi_request *requests[1 << 16];
-
 	void (*write_cb) (void *user_data, const void *data, size_t len);
 	void (*close_cb) (void *user_data);
 
@@ -136,6 +132,9 @@ struct fcgi_muxer
 	void (*request_destroy_cb) (void *handler_data);
 
 	void *user_data;                    ///< User data for callbacks
+
+	/// Requests assigned to request IDs (may not be FCGI_NULL_REQUEST_ID)
+	struct fcgi_request *requests[1 << 8];
 };
 
 static void
@@ -284,18 +283,21 @@ fcgi_muxer_on_get_values
 	nv_parser.output = &values;
 
 	fcgi_nv_parser_push (&nv_parser, parser->content.str, parser->content.len);
+	const char *key = NULL;
 
-	struct str_map_iter iter = str_map_iter_make (&values);
-	while (str_map_iter_next (&iter))
-	{
-		const char *key = iter.link->key;
+	// No real-world servers seem to actually use multiplexing
+	// or even issue this request, but we will implement it anyway
+	if (str_map_find (&values, (key = FCGI_MPXS_CONNS)))
+		str_map_set (&response, key, xstrdup ("1"));
 
-		// TODO: if (!strcmp (key, FCGI_MAX_CONNS))
-		// TODO: if (!strcmp (key, FCGI_MAX_REQS))
+	// It's not clear whether FCGI_MAX_REQS means concurrently over all
+	// connections or over just a single connection (multiplexed), though
+	// supposedly it's actually per /web server/.  Supply the strictest limit.
+	if (str_map_find (&values, (key = FCGI_MAX_REQS)))
+		str_map_set (&response, key,
+			xstrdup_printf ("%zu", N_ELEMENTS (self->requests) - 1));
 
-		if (!strcmp (key, FCGI_MPXS_CONNS))
-			str_map_set (&response, key, xstrdup ("1"));
-	}
+	// FCGI_MAX_CONNS would be basically infinity.  We don't limit connections.
 
 	struct str content = str_make ();
 	fcgi_nv_convert (&response, &content);
