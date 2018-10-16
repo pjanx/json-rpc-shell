@@ -1811,14 +1811,19 @@ struct client
 /// The concrete behaviour to serve a particular client's requests
 struct client_vtable
 {
-	/// Attempt a graceful shutdown
+	/// Process incoming data; "len == 0" means EOF.
+	/// If the method returns false, the client is destroyed by caller.
+	bool (*push) (struct client *client, const void *data, size_t len);
+
+	// TODO: optional push_error() to inform about network I/O errors
+
+	/// Attempt a graceful shutdown: make any appropriate steps before
+	/// the client connection times out and gets torn down by force.
+	/// The client is allowed to destroy itself immediately.
 	void (*shutdown) (struct client *client);
 
 	/// Do any additional cleanup for the concrete class before destruction
 	void (*finalize) (struct client *client);
-
-	/// Process incoming data; "len == 0" means EOF
-	bool (*push) (struct client *client, const void *data, size_t len);
 };
 
 static void
@@ -2022,6 +2027,14 @@ client_fcgi_close_cb (struct fcgi_muxer *mux)
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
+static bool
+client_fcgi_push (struct client *client, const void *data, size_t len)
+{
+	struct client_fcgi *self = (struct client_fcgi *) client;
+	fcgi_muxer_push (&self->muxer, data, len);
+	return true;
+}
+
 static void
 client_fcgi_shutdown (struct client *client)
 {
@@ -2039,19 +2052,11 @@ client_fcgi_finalize (struct client *client)
 	fcgi_muxer_free (&self->muxer);
 }
 
-static bool
-client_fcgi_push (struct client *client, const void *data, size_t len)
-{
-	struct client_fcgi *self = (struct client_fcgi *) client;
-	fcgi_muxer_push (&self->muxer, data, len);
-	return true;
-}
-
 static struct client_vtable client_fcgi_vtable =
 {
+	.push     = client_fcgi_push,
 	.shutdown = client_fcgi_shutdown,
 	.finalize = client_fcgi_finalize,
-	.push     = client_fcgi_push,
 };
 
 static struct client *
@@ -2116,14 +2121,6 @@ client_scgi_on_content (void *user_data, const void *data, size_t len)
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-static void
-client_scgi_finalize (struct client *client)
-{
-	struct client_scgi *self = (struct client_scgi *) client;
-	request_free (&self->request);
-	scgi_parser_free (&self->parser);
-}
-
 static bool
 client_scgi_push (struct client *client, const void *data, size_t len)
 {
@@ -2140,10 +2137,18 @@ client_scgi_push (struct client *client, const void *data, size_t len)
 	return false;
 }
 
+static void
+client_scgi_finalize (struct client *client)
+{
+	struct client_scgi *self = (struct client_scgi *) client;
+	request_free (&self->request);
+	scgi_parser_free (&self->parser);
+}
+
 static struct client_vtable client_scgi_vtable =
 {
-	.finalize = client_scgi_finalize,
 	.push     = client_scgi_push,
+	.finalize = client_scgi_finalize,
 };
 
 static struct client *
@@ -2212,6 +2217,13 @@ client_ws_close_cb (struct ws_handler *handler, bool half_close)
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
+static bool
+client_ws_push (struct client *client, const void *data, size_t len)
+{
+	FIND_CONTAINER (self, client, struct client_ws, client);
+	return ws_handler_push (&self->handler, data, len);
+}
+
 static void
 client_ws_shutdown (struct client *client)
 {
@@ -2229,18 +2241,11 @@ client_ws_finalize (struct client *client)
 	ws_handler_free (&self->handler);
 }
 
-static bool
-client_ws_push (struct client *client, const void *data, size_t len)
-{
-	FIND_CONTAINER (self, client, struct client_ws, client);
-	return ws_handler_push (&self->handler, data, len);
-}
-
 static struct client_vtable client_ws_vtable =
 {
+	.push     = client_ws_push,
 	.shutdown = client_ws_shutdown,
 	.finalize = client_ws_finalize,
-	.push     = client_ws_push,
 };
 
 static struct client *
