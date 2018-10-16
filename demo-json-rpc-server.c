@@ -2218,21 +2218,21 @@ client_ws_close_cb (struct ws_handler *handler)
 static void
 client_ws_shutdown (struct client *client)
 {
-	struct client_ws *self = (struct client_ws *) client;
+	FIND_CONTAINER (self, client, struct client_ws, client);
 	ws_handler_close (&self->handler, WS_STATUS_GOING_AWAY, NULL, 0);
 }
 
 static void
 client_ws_destroy (struct client *client)
 {
-	struct client_ws *self = (struct client_ws *) client;
+	FIND_CONTAINER (self, client, struct client_ws, client);
 	ws_handler_free (&self->handler);
 }
 
 static bool
 client_ws_push (struct client *client, const void *data, size_t len)
 {
-	struct client_ws *self = (struct client_ws *) client;
+	FIND_CONTAINER (self, client, struct client_ws, client);
 	return ws_handler_push (&self->handler, data, len);
 }
 
