@@ -540,10 +540,6 @@ struct ws_handler
 
 	/// The connection is about to close.  @a close_code may, or may not, be one
 	/// of enum ws_status.  The @a reason is never NULL.
-	// TODO; also note that ideally, the handler should (be able to) first
-	//   receive a notification about the connection being closed because of
-	//   an error (recv()) returns -1, and call on_close() in reaction.
-	//   Actually, calling push() could work pretty fine for this.
 	void (*on_close) (struct ws_handler *, int close_code, const char *reason);
 
 	// Virtual method callbacks:
@@ -551,8 +547,9 @@ struct ws_handler
 	/// Write a chunk of data to the stream
 	void (*write_cb) (struct ws_handler *, const void *data, size_t len);
 
-	/// Close the connection
-	void (*close_cb) (struct ws_handler *);
+	/// Close the connection.  If @a half_close is false, you are allowed to
+	/// destroy the handler directly from within the callback.
+	void (*close_cb) (struct ws_handler *, bool half_close);
 };
 
 static void
@@ -777,7 +774,7 @@ ws_handler_on_close_timeout (EV_P_ ev_timer *watcher, int revents)
 
 	// TODO: anything else to do here? Invalidate our state?
 	if (self->close_cb)
-		self->close_cb (self);
+		self->close_cb (self, false /* half_close */);
 }
 
 static void
@@ -2205,12 +2202,13 @@ client_ws_write_cb (struct ws_handler *handler, const void *data, size_t len)
 }
 
 static void
-client_ws_close_cb (struct ws_handler *handler)
+client_ws_close_cb (struct ws_handler *handler, bool half_close)
 {
 	FIND_CONTAINER (self, handler, struct client_ws, handler);
-	// FIXME: we should probably call something like client_shutdown(),
-	//   which may have an argument whether we should really use close()
-	client_destroy (&self->client);
+	if (half_close)
+		;  // FIXME: we should probably call something like client_shutdown()
+	else
+		client_destroy (&self->client);
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -2219,7 +2217,10 @@ static void
 client_ws_shutdown (struct client *client)
 {
 	FIND_CONTAINER (self, client, struct client_ws, client);
-	ws_handler_close (&self->handler, WS_STATUS_GOING_AWAY, NULL, 0);
+	if (self->handler.state == WS_HANDLER_CONNECTING)
+		;  // TODO: abort the connection immediately
+	else if (self->handler.state == WS_HANDLER_OPEN)
+		ws_handler_close (&self->handler, WS_STATUS_GOING_AWAY, NULL, 0);
 }
 
 static void
