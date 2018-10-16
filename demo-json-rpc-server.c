@@ -1814,9 +1814,8 @@ struct client_vtable
 	/// Attempt a graceful shutdown
 	void (*shutdown) (struct client *client);
 
-	/// Do any additional cleanup
-	// TODO: rename to "finalize" or "cleanup"?
-	void (*destroy) (struct client *client);
+	/// Do any additional cleanup for the concrete class before destruction
+	void (*finalize) (struct client *client);
 
 	/// Process incoming data; "len == 0" means EOF
 	bool (*push) (struct client *client, const void *data, size_t len);
@@ -1848,7 +1847,7 @@ client_destroy (struct client *self)
 	ctx->n_clients--;
 
 	// First uninitialize the higher-level implementation
-	self->vtable->destroy (self);
+	self->vtable->finalize (self);
 
 	ev_io_stop (EV_DEFAULT_ &self->read_watcher);
 	ev_io_stop (EV_DEFAULT_ &self->write_watcher);
@@ -2034,7 +2033,7 @@ client_fcgi_shutdown (struct client *client)
 }
 
 static void
-client_fcgi_destroy (struct client *client)
+client_fcgi_finalize (struct client *client)
 {
 	struct client_fcgi *self = (struct client_fcgi *) client;
 	fcgi_muxer_free (&self->muxer);
@@ -2051,7 +2050,7 @@ client_fcgi_push (struct client *client, const void *data, size_t len)
 static struct client_vtable client_fcgi_vtable =
 {
 	.shutdown = client_fcgi_shutdown,
-	.destroy  = client_fcgi_destroy,
+	.finalize = client_fcgi_finalize,
 	.push     = client_fcgi_push,
 };
 
@@ -2118,7 +2117,7 @@ client_scgi_on_content (void *user_data, const void *data, size_t len)
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 static void
-client_scgi_destroy (struct client *client)
+client_scgi_finalize (struct client *client)
 {
 	struct client_scgi *self = (struct client_scgi *) client;
 	request_free (&self->request);
@@ -2143,8 +2142,8 @@ client_scgi_push (struct client *client, const void *data, size_t len)
 
 static struct client_vtable client_scgi_vtable =
 {
-	.destroy = client_scgi_destroy,
-	.push    = client_scgi_push,
+	.finalize = client_scgi_finalize,
+	.push     = client_scgi_push,
 };
 
 static struct client *
@@ -2224,7 +2223,7 @@ client_ws_shutdown (struct client *client)
 }
 
 static void
-client_ws_destroy (struct client *client)
+client_ws_finalize (struct client *client)
 {
 	FIND_CONTAINER (self, client, struct client_ws, client);
 	ws_handler_free (&self->handler);
@@ -2240,7 +2239,7 @@ client_ws_push (struct client *client, const void *data, size_t len)
 static struct client_vtable client_ws_vtable =
 {
 	.shutdown = client_ws_shutdown,
-	.destroy  = client_ws_destroy,
+	.finalize = client_ws_finalize,
 	.push     = client_ws_push,
 };
 
