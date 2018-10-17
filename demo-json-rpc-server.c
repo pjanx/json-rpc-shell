@@ -123,18 +123,32 @@ struct fcgi_request
 	void *handler_data;                 ///< Handler data
 };
 
+/// Handles a single FastCGI connection, de/multiplexing requests and responses
 struct fcgi_muxer
 {
 	struct fcgi_parser parser;          ///< FastCGI message parser
+	uint32_t active_requests;           ///< The number of active requests
+	bool in_shutdown;                   ///< Rejecting new requests
 
-	// TODO: bool quitting; that causes us to reject all requests?
+	// Virtual method callbacks:
 
+	/// Write data to the underlying transport
 	void (*write_cb) (struct fcgi_muxer *, const void *data, size_t len);
+
+	/// Close the underlying transport
+	// TODO: consider half-close and the subsequent handling
 	void (*close_cb) (struct fcgi_muxer *);
 
-	void *(*request_start_cb) (struct fcgi_muxer *, struct fcgi_request *);
-	void (*request_push_cb) (void *handler_data, const void *data, size_t len);
-	void (*request_destroy_cb) (void *handler_data);
+	/// Start processing a request.  Return false if no further action is
+	/// to be done and the request should be finished.
+	bool (*request_start_cb) (struct fcgi_muxer *, struct fcgi_request *);
+
+	/// Handle incoming data.  "len == 0" means EOF.
+	void (*request_push_cb)
+		(struct fcgi_request *, const void *data, size_t len);
+
+	/// Destroy the handler's data stored in the request object
+	void (*request_destroy_cb) (struct fcgi_request *);
 
 	/// Requests assigned to request IDs (may not be FCGI_NULL_REQUEST_ID)
 	struct fcgi_request *requests[1 << 8];
@@ -177,22 +191,27 @@ fcgi_muxer_send_end_request (struct fcgi_muxer *self, uint16_t request_id,
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-static void
-fcgi_request_init (struct fcgi_request *self)
+static struct fcgi_request *
+fcgi_request_new (void)
 {
-	memset (self, 0, sizeof *self);
+	struct fcgi_request *self = xcalloc (1, sizeof *self);
 
 	self->headers = str_map_make (free);
 
 	self->hdr_parser = fcgi_nv_parser_make ();
 	self->hdr_parser.output = &self->headers;
+	return self;
 }
 
 static void
-fcgi_request_free (struct fcgi_request *self)
+fcgi_request_destroy (struct fcgi_request *self)
 {
+	// TODO: consider the case where it hasn't been started yet
+	self->muxer->request_destroy_cb (self);
+
 	str_map_free (&self->headers);
 	fcgi_nv_parser_free (&self->hdr_parser);
+	free (self);
 }
 
 static void
@@ -211,7 +230,7 @@ fcgi_request_push_params
 	{
 		// TODO: probably check the state of the header parser
 		// TODO: request_start() can return false, end the request here?
-		self->handler_data = self->muxer->request_start_cb (self->muxer, self);
+		(void) self->muxer->request_start_cb (self->muxer, self);
 		self->state = FCGI_REQUEST_STDIN;
 	}
 }
@@ -226,7 +245,7 @@ fcgi_request_push_stdin
 		return;
 	}
 
-	self->muxer->request_push_cb (self->handler_data, data, len);
+	self->muxer->request_push_cb (self, data, len);
 }
 
 static void
@@ -266,7 +285,21 @@ fcgi_request_write (struct fcgi_request *self, const void *data, size_t len)
 static void
 fcgi_request_finish (struct fcgi_request *self)
 {
-	// TODO: flush(), end_request(), delete self, muxer->request_destroy_cb()?
+	fcgi_request_flush (self);
+	fcgi_muxer_send (self->muxer, FCGI_STDOUT, self->request_id, NULL, 0);
+
+	fcgi_muxer_send_end_request (self->muxer, self->request_id,
+		0 /* TODO app_status, although ignored */,
+		FCGI_REQUEST_COMPLETE /* TODO protocol_status, may be different */);
+
+	if (!(self->flags & FCGI_KEEP_CONN))
+	{
+		// TODO: tear down (shut down) the connection
+	}
+
+	self->muxer->active_requests--;
+	self->muxer->requests[self->request_id] = NULL;
+	fcgi_request_destroy (self);
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -354,21 +387,21 @@ fcgi_muxer_on_begin_request
 		return;
 	}
 
-	// TODO: also send OVERLOADED when shutting down?
-	if (parser->request_id >= N_ELEMENTS (self->requests))
+	if (parser->request_id >= N_ELEMENTS (self->requests)
+	 || self->in_shutdown)
 	{
 		fcgi_muxer_send_end_request (self,
 			parser->request_id, 0, FCGI_OVERLOADED);
 		return;
 	}
 
-	request = xcalloc (1, sizeof *request);
-	fcgi_request_init (request);
+	request = fcgi_request_new ();
 	request->muxer = self;
 	request->request_id = parser->request_id;
 	request->flags = flags;
 
 	self->requests[parser->request_id] = request;
+	self->active_requests++;
 }
 
 static void
@@ -464,6 +497,17 @@ fcgi_muxer_init (struct fcgi_muxer *self)
 static void
 fcgi_muxer_free (struct fcgi_muxer *self)
 {
+	for (size_t i = 0; i < N_ELEMENTS (self->requests); i++)
+	{
+		if (!self->active_requests)
+			break;
+		if (self->requests[i])
+		{
+			fcgi_request_destroy (self->requests[i]);
+			self->active_requests--;
+		}
+	}
+
 	fcgi_parser_free (&self->parser);
 }
 
@@ -1977,33 +2021,35 @@ client_fcgi_request_close_cb (struct request *req)
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-static void *
+static bool
 client_fcgi_request_start
 	(struct fcgi_muxer *mux, struct fcgi_request *fcgi_request)
 {
 	FIND_CONTAINER (self, mux, struct client_fcgi, muxer);
 
-	// TODO: what if the request is aborted by ;
-	struct client_fcgi_request *request = xcalloc (1, sizeof *request);
+	struct client_fcgi_request *request =
+		fcgi_request->handler_data = xcalloc (1, sizeof *request);
 	request->fcgi_request = fcgi_request;
 	request_init (&request->request);
 	request->request.ctx = self->client.ctx;
 	request->request.write_cb = client_fcgi_request_write_cb;
 	request->request.close_cb = client_fcgi_request_close_cb;
-	return request;
+
+	return request_start (&request->request, &fcgi_request->headers);
 }
 
 static void
-client_fcgi_request_push (void *handler_data, const void *data, size_t len)
+client_fcgi_request_push
+	(struct fcgi_request *req, const void *data, size_t len)
 {
-	struct client_fcgi_request *request = handler_data;
+	struct client_fcgi_request *request = req->handler_data;
 	request_push (&request->request, data, len);
 }
 
 static void
-client_fcgi_request_destroy (void *handler_data)
+client_fcgi_request_destroy (struct fcgi_request *req)
 {
-	struct client_fcgi_request *request = handler_data;
+	struct client_fcgi_request *request = req->handler_data;
 	request_free (&request->request);
 	free (request);
 }
@@ -2031,7 +2077,7 @@ client_fcgi_close_cb (struct fcgi_muxer *mux)
 static bool
 client_fcgi_push (struct client *client, const void *data, size_t len)
 {
-	struct client_fcgi *self = (struct client_fcgi *) client;
+	FIND_CONTAINER (self, client, struct client_fcgi, client);
 	fcgi_muxer_push (&self->muxer, data, len);
 	return true;
 }
@@ -2039,17 +2085,17 @@ client_fcgi_push (struct client *client, const void *data, size_t len)
 static void
 client_fcgi_shutdown (struct client *client)
 {
-	struct client_fcgi *self = (struct client_fcgi *) client;
+	FIND_CONTAINER (self, client, struct client_fcgi, client);
+	self->muxer.in_shutdown = true;
 
-	// TODO: respond with FCGI_END_REQUEST: FCGI_REQUEST_COMPLETE to everything,
-	//   and start sending out FCGI_OVERLOADED to all incoming requests.  The
-	//   FastCGI specification isn't very clear about what we should do.
+	// TODO: respond with FCGI_END_REQUEST: FCGI_REQUEST_COMPLETE to everything?
+	//   The FastCGI specification isn't very clear about what we should do.
 }
 
 static void
 client_fcgi_finalize (struct client *client)
 {
-	struct client_fcgi *self = (struct client_fcgi *) client;
+	FIND_CONTAINER (self, client, struct client_fcgi, client);
 	fcgi_muxer_free (&self->muxer);
 }
 
