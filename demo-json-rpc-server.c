@@ -1544,6 +1544,8 @@ struct request_handler
 
 	/// Handle incoming data.  "len == 0" means EOF.
 	/// Returns false if there is no more processing to be done.
+	// FIXME: the EOF may or may not be delivered when request is cut short,
+	//   we should fix FastCGI not to deliver it on CONTENT_LENGTH mismatch
 	bool (*push_cb) (struct request *request, const void *data, size_t len);
 
 	/// Destroy the handler's data stored in the request object
@@ -1655,7 +1657,8 @@ request_handler_json_rpc_push
 	}
 
 	// TODO: check buf.len against CONTENT_LENGTH; if it's less, then the
-	//   client hasn't been successful in transferring all of its data
+	//   client hasn't been successful in transferring all of its data.
+	//   See also comment on request_handler::push_cb.
 
 	struct str response = str_make ();
 	str_append (&response, "Status: 200 OK\n");
@@ -2202,6 +2205,7 @@ struct client_scgi
 	struct client client;               ///< Parent class
 	struct scgi_parser parser;          ///< SCGI stream parser
 	struct request request;             ///< Request (only one per connection)
+	unsigned long remaining_content;    ///< Length of input data to be seen
 };
 
 static void
@@ -2223,6 +2227,12 @@ static bool
 client_scgi_on_headers_read (void *user_data)
 {
 	struct client_scgi *self = user_data;
+	const char *cl = str_map_find (&self->parser.headers, "CONTENT_LENGTH");
+	if (!cl || !xstrtoul (&self->remaining_content, cl, 10))
+	{
+		print_debug ("SCGI request with invalid or missing CONTENT_LENGTH");
+		return false;
+	}
 	return request_start (&self->request, &self->parser.headers);
 }
 
@@ -2230,11 +2240,19 @@ static bool
 client_scgi_on_content (void *user_data, const void *data, size_t len)
 {
 	struct client_scgi *self = user_data;
+	if (len > self->remaining_content)
+	{
+		print_debug ("SCGI request got more data than CONTENT_LENGTH");
+		return false;
+	}
+	// We're in a slight disagreement with the specification since
+	// this tries to write output before it has read all the input
+	if (!request_push (&self->request, data, len))
+		return false;
 
-	// XXX: do we have to count CONTENT_LENGTH and supply our own EOF?
-	//   If we do produce our own EOF, we should probably make sure we don't
-	//   send it twice in a row.
-	return request_push (&self->request, data, len);
+	// Signalise end of input to the request handler
+	return (self->remaining_content -= len) != 0
+		|| request_push (&self->request, NULL, 0);
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
