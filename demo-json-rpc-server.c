@@ -2586,10 +2586,14 @@ on_termination_signal (EV_P_ ev_signal *handle, int revents)
 	(void) handle;
 	(void) revents;
 
-	// TODO: consider quitting right away if already quitting;
-	//   considering that this may already happen in timeout, it should be OK;
-	//   see on_quit_timeout, just destroy all clients
-	initiate_quit (ctx);
+	if (ctx->quitting)
+	{
+		// Double C-c from the terminal accelerates the process
+		LIST_FOR_EACH (struct client, iter, ctx->clients)
+			client_destroy (iter);
+	}
+	else
+		initiate_quit (ctx);
 }
 
 static void
