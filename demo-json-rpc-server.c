@@ -413,6 +413,7 @@ fcgi_muxer_on_stdin (struct fcgi_muxer *self, const struct fcgi_parser *parser)
 		return;
 	}
 
+	// At the end of the stream, a zero-length record is received
 	fcgi_request_push_stdin (request,
 		parser->content.str, parser->content.len);
 }
@@ -1092,7 +1093,7 @@ ws_handler_start (struct ws_handler *self)
 	ev_timer_start (EV_DEFAULT_ &self->handshake_timeout_watcher);
 }
 
-/// Push data to the WebSocket handler; "len == 0" means EOF
+/// Push data to the WebSocket handler.  "len == 0" means EOF.
 static bool
 ws_handler_push (struct ws_handler *self, const void *data, size_t len)
 {
@@ -1488,7 +1489,7 @@ struct request_handler
 	bool (*try_handle) (struct request *request,
 		struct str_map *headers, bool *continue_);
 
-	/// Handle incoming data.
+	/// Handle incoming data.  "len == 0" means EOF.
 	/// Returns false if there is no more processing to be done.
 	bool (*push_cb) (struct request *request, const void *data, size_t len);
 
@@ -1768,10 +1769,10 @@ request_handler_static_push
 {
 	(void) request;
 	(void) data;
-	(void) len;
 
-	// Ignoring all content; we shouldn't receive any (GET)
-	return false;
+	// Aborting on content; we shouldn't receive any (GET)
+	// FIXME: there should at least be some indication of this happening
+	return len == 0;
 }
 
 static void
