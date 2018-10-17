@@ -1872,12 +1872,6 @@ struct client_vtable
 };
 
 static void
-client_free (struct client *self)
-{
-	write_queue_free (&self->write_queue);
-}
-
-static void
 client_write (struct client *self, const void *data, size_t len)
 {
 	struct write_req *req = xcalloc (1, sizeof *req);
@@ -1902,7 +1896,7 @@ client_destroy (struct client *self)
 	ev_io_stop (EV_DEFAULT_ &self->read_watcher);
 	ev_io_stop (EV_DEFAULT_ &self->write_watcher);
 	xclose (self->socket_fd);
-	client_free (self);
+	write_queue_free (&self->write_queue);
 	free (self);
 
 	try_finish_quit (ctx);
@@ -1962,12 +1956,14 @@ close:
 	client_destroy (client);
 }
 
-static void
-client_init (EV_P_ struct client *self, int sock_fd)
+/// Create a new instance of a subclass with the given size.
+/// The superclass is assumed to be the first member of the structure.
+static void *
+client_new (EV_P_ size_t size, int sock_fd)
 {
 	struct server_context *ctx = ev_userdata (loop);
+	struct client *self = xcalloc (1, size);
 
-	memset (self, 0, sizeof *self);
 	self->ctx = ctx;
 	self->write_queue = write_queue_make ();
 
@@ -1984,6 +1980,7 @@ client_init (EV_P_ struct client *self, int sock_fd)
 
 	LIST_PREPEND (ctx->clients, self);
 	ctx->n_clients++;
+	return self;
 }
 
 // --- FastCGI client handler --------------------------------------------------
@@ -2109,8 +2106,7 @@ static struct client_vtable client_fcgi_vtable =
 static struct client *
 client_fcgi_create (EV_P_ int sock_fd)
 {
-	struct client_fcgi *self = xcalloc (1, sizeof *self);
-	client_init (EV_A_ &self->client, sock_fd);
+	struct client_fcgi *self = client_new (EV_A_ sizeof *self, sock_fd);
 	self->client.vtable = &client_fcgi_vtable;
 
 	fcgi_muxer_init (&self->muxer);
@@ -2201,8 +2197,7 @@ static struct client_vtable client_scgi_vtable =
 static struct client *
 client_scgi_create (EV_P_ int sock_fd)
 {
-	struct client_scgi *self = xcalloc (1, sizeof *self);
-	client_init (EV_A_ &self->client, sock_fd);
+	struct client_scgi *self = client_new (EV_A_ sizeof *self, sock_fd);
 	self->client.vtable = &client_scgi_vtable;
 
 	request_init (&self->request);
@@ -2298,8 +2293,7 @@ static struct client_vtable client_ws_vtable =
 static struct client *
 client_ws_create (EV_P_ int sock_fd)
 {
-	struct client_ws *self = xcalloc (1, sizeof *self);
-	client_init (EV_A_ &self->client, sock_fd);
+	struct client_ws *self = client_new (EV_A_ sizeof *self, sock_fd);
 	self->client.vtable = &client_ws_vtable;
 
 	ws_handler_init (&self->handler);
