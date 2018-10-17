@@ -148,7 +148,7 @@ struct fcgi_muxer
 		(struct fcgi_request *, const void *data, size_t len);
 
 	/// Destroy the handler's data stored in the request object
-	void (*request_destroy_cb) (struct fcgi_request *);
+	void (*request_finalize_cb) (struct fcgi_request *);
 
 	/// Requests assigned to request IDs (may not be FCGI_NULL_REQUEST_ID)
 	struct fcgi_request *requests[1 << 8];
@@ -207,7 +207,7 @@ static void
 fcgi_request_destroy (struct fcgi_request *self)
 {
 	// TODO: consider the case where it hasn't been started yet
-	self->muxer->request_destroy_cb (self);
+	self->muxer->request_finalize_cb (self);
 
 	str_map_free (&self->headers);
 	fcgi_nv_parser_free (&self->hdr_parser);
@@ -1538,7 +1538,7 @@ struct request_handler
 	bool (*push_cb) (struct request *request, const void *data, size_t len);
 
 	/// Destroy the handler's data stored in the request object
-	void (*destroy_cb) (struct request *request);
+	void (*finalize_cb) (struct request *request);
 };
 
 static void
@@ -1551,7 +1551,7 @@ static void
 request_free (struct request *self)
 {
 	if (self->handler)
-		self->handler->destroy_cb (self);
+		self->handler->finalize_cb (self);
 }
 
 /// This function is only intended to be run from asynchronous event handlers
@@ -1651,7 +1651,7 @@ request_handler_json_rpc_push
 }
 
 static void
-request_handler_json_rpc_destroy (struct request *request)
+request_handler_json_rpc_finalize (struct request *request)
 {
 	struct str *buf = request->handler_data;
 	str_free (buf);
@@ -1662,9 +1662,9 @@ request_handler_json_rpc_destroy (struct request *request)
 
 struct request_handler g_request_handler_json_rpc =
 {
-	.try_handle = request_handler_json_rpc_try_handle,
-	.push_cb    = request_handler_json_rpc_push,
-	.destroy_cb = request_handler_json_rpc_destroy,
+	.try_handle  = request_handler_json_rpc_try_handle,
+	.push_cb     = request_handler_json_rpc_push,
+	.finalize_cb = request_handler_json_rpc_finalize,
 };
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -1820,7 +1820,7 @@ request_handler_static_push
 }
 
 static void
-request_handler_static_destroy (struct request *request)
+request_handler_static_finalize (struct request *request)
 {
 	(void) request;
 	// Nothing to dispose of this far
@@ -1828,9 +1828,9 @@ request_handler_static_destroy (struct request *request)
 
 struct request_handler g_request_handler_static =
 {
-	.try_handle = request_handler_static_try_handle,
-	.push_cb    = request_handler_static_push,
-	.destroy_cb = request_handler_static_destroy,
+	.try_handle  = request_handler_static_try_handle,
+	.push_cb     = request_handler_static_push,
+	.finalize_cb = request_handler_static_finalize,
 };
 
 // --- Client communication handlers -------------------------------------------
@@ -2047,7 +2047,7 @@ client_fcgi_request_push
 }
 
 static void
-client_fcgi_request_destroy (struct fcgi_request *req)
+client_fcgi_request_finalize (struct fcgi_request *req)
 {
 	struct client_fcgi_request *request = req->handler_data;
 	request_free (&request->request);
@@ -2114,11 +2114,11 @@ client_fcgi_create (EV_P_ int sock_fd)
 	self->client.vtable = &client_fcgi_vtable;
 
 	fcgi_muxer_init (&self->muxer);
-	self->muxer.write_cb           = client_fcgi_write_cb;
-	self->muxer.close_cb           = client_fcgi_close_cb;
-	self->muxer.request_start_cb   = client_fcgi_request_start;
-	self->muxer.request_push_cb    = client_fcgi_request_push;
-	self->muxer.request_destroy_cb = client_fcgi_request_destroy;
+	self->muxer.write_cb            = client_fcgi_write_cb;
+	self->muxer.close_cb            = client_fcgi_close_cb;
+	self->muxer.request_start_cb    = client_fcgi_request_start;
+	self->muxer.request_push_cb     = client_fcgi_request_push;
+	self->muxer.request_finalize_cb = client_fcgi_request_finalize;
 	return &self->client;
 }
 
