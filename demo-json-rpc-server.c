@@ -1563,6 +1563,13 @@ request_free (struct request *self)
 		self->handler->finalize_cb (self);
 }
 
+/// Write request CGI response data, intended for use by request handlers
+static void
+request_write (struct request *self, const void *data, size_t len)
+{
+	self->write_cb (self, data, len);
+}
+
 /// This function is only intended to be run from asynchronous event handlers
 /// such as timers, not as a direct result of starting the request or receiving
 /// request data.  CALLING THIS MAY CAUSE THE REQUEST TO BE DESTROYED.
@@ -1599,7 +1606,7 @@ request_start (struct request *self, struct str_map *headers)
 	struct str response = str_make ();
 	str_append (&response, "Status: 404 Not Found\n");
 	str_append (&response, "Content-Type: text/plain\n\n");
-	self->write_cb (self, response.str, response.len);
+	request_write (self, response.str, response.len);
 	str_free (&response);
 	return false;
 }
@@ -1654,7 +1661,7 @@ request_handler_json_rpc_push
 	str_append (&response, "Status: 200 OK\n");
 	str_append_printf (&response, "Content-Type: %s\n\n", "application/json");
 	process_json_rpc (request->ctx, buf->str, buf->len, &response);
-	request->write_cb (request, response.str, response.len);
+	request_write (request, response.str, response.len);
 	str_free (&response);
 	return false;
 }
@@ -1770,7 +1777,7 @@ request_handler_static_try_handle
 		str_append (&response, "Content-Type: text/plain\n\n");
 		str_append_printf (&response,
 			"File %s was not found on this server\n", suffix);
-		request->write_cb (request, response.str, response.len);
+		request_write (request, response.str, response.len);
 		str_free (&response);
 
 		free (suffix);
@@ -1794,17 +1801,17 @@ request_handler_static_try_handle
 	struct str response = str_make ();
 	str_append (&response, "Status: 200 OK\n");
 	str_append_printf (&response, "Content-Type: %s\n\n", mime_type);
-	request->write_cb (request, response.str, response.len);
+	request_write (request, response.str, response.len);
 	str_free (&response);
 	free (mime_type);
 
 	// Write the chunk we've used to help us with magic detection;
 	// obviously we have to do it after we've written the headers
 	if (len)
-		request->write_cb (request, buf, len);
+		request_write (request, buf, len);
 
 	while ((len = fread (buf, 1, sizeof buf, fp)))
-		request->write_cb (request, buf, len);
+		request_write (request, buf, len);
 	fclose (fp);
 
 	// TODO: this should rather not be returned all at once but in chunks;
