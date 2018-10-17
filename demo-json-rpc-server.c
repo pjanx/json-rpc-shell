@@ -1854,10 +1854,11 @@ struct client
 
 	int socket_fd;                      ///< The network socket
 	bool received_eof;                  ///< Whether EOF has been received yet
-	bool closing;                       ///< Whether we're just flushing buffers
-	bool half_closed;                   ///< Transport half-closed while closing
+	bool flushing;                      ///< No more data to write, send FIN
+	bool closing;                       ///< No more data to read or write
+	bool half_closed;                   ///< Conn. half-closed while flushing
 	struct write_queue write_queue;     ///< Write queue
-	ev_timer flush_timeout_watcher;     ///< Write queue flush timer
+	ev_timer close_timeout_watcher;     ///< Write queue flush timer
 
 	ev_io read_watcher;                 ///< The socket can be read from
 	ev_io write_watcher;                ///< The socket can be written to
@@ -1882,17 +1883,6 @@ struct client_vtable
 };
 
 static void
-client_write (struct client *self, const void *data, size_t len)
-{
-	struct write_req *req = xcalloc (1, sizeof *req);
-	req->data.iov_base = memcpy (xmalloc (len), data, len);
-	req->data.iov_len = len;
-
-	write_queue_add (&self->write_queue, req);
-	ev_io_start (EV_DEFAULT_ &self->write_watcher);
-}
-
-static void
 client_destroy (struct client *self)
 {
 	// XXX: this codebase halfway pretends there could be other contexts
@@ -1907,10 +1897,34 @@ client_destroy (struct client *self)
 	ev_io_stop (EV_DEFAULT_ &self->write_watcher);
 	xclose (self->socket_fd);
 	write_queue_free (&self->write_queue);
-	ev_timer_stop (EV_DEFAULT_ &self->flush_timeout_watcher);
+	ev_timer_stop (EV_DEFAULT_ &self->close_timeout_watcher);
 	free (self);
 
 	try_finish_quit (ctx);
+}
+
+static void
+client_write (struct client *self, const void *data, size_t len)
+{
+	if (!soft_assert (!self->flushing))
+		return;
+
+	struct write_req *req = xcalloc (1, sizeof *req);
+	req->data.iov_base = memcpy (xmalloc (len), data, len);
+	req->data.iov_len = len;
+
+	write_queue_add (&self->write_queue, req);
+	ev_io_start (EV_DEFAULT_ &self->write_watcher);
+}
+
+/// Half-close the connection from our side once the write_queue is flushed.
+/// It is the caller's responsibility to destroy the connection upon EOF.
+// XXX: or we might change on_client_readable to do it anyway, seems safe
+static void
+client_shutdown (struct client *self)
+{
+	self->flushing = true;
+	ev_feed_event (EV_DEFAULT_ &self->write_watcher, EV_WRITE);
 }
 
 /// Try to cleanly close the connection, waiting for the remote client to close
@@ -1924,8 +1938,8 @@ client_close (struct client *self)
 		return;
 
 	self->closing = true;
-	ev_timer_start (EV_DEFAULT_ &self->flush_timeout_watcher);
-	ev_feed_event (EV_DEFAULT_ &self->write_watcher, EV_WRITE);
+	ev_timer_start (EV_DEFAULT_ &self->close_timeout_watcher);
+	client_shutdown (self);
 
 	// We assume the remote client doesn't want our data if it half-closes
 	if (self->received_eof)
@@ -1996,7 +2010,7 @@ on_client_writable (EV_P_ ev_io *watcher, int revents)
 		return;
 
 	ev_io_stop (EV_A_ watcher);
-	if (client->closing && !client->half_closed)
+	if (client->flushing && !client->half_closed)
 	{
 		if (!shutdown (client->socket_fd, SHUT_WR))
 			client->half_closed = true;
@@ -2023,8 +2037,8 @@ client_new (EV_P_ size_t size, int sock_fd)
 	struct client *self = xcalloc (1, size);
 
 	self->write_queue = write_queue_make ();
-	ev_timer_init (&self->flush_timeout_watcher, on_client_timeout, 5., 0.);
-	self->flush_timeout_watcher.data = self;
+	ev_timer_init (&self->close_timeout_watcher, on_client_timeout, 5., 0.);
+	self->close_timeout_watcher.data = self;
 
 	set_blocking (sock_fd, false);
 	self->socket_fd = sock_fd;
@@ -2305,10 +2319,7 @@ static void
 client_ws_close_cb (struct ws_handler *handler, bool half_close)
 {
 	FIND_CONTAINER (self, handler, struct client_ws, handler);
-	if (half_close)
-		;  // FIXME: we should probably call something like client_shutdown()
-	else
-		client_destroy (&self->client);
+	(half_close ? client_shutdown : client_destroy) (&self->client);
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
