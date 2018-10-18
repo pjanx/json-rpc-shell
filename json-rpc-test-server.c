@@ -128,8 +128,8 @@ struct fcgi_muxer
 
 	// Virtual method callbacks:
 
-	/// Write data to the underlying transport
-	void (*write_cb) (struct fcgi_muxer *, const void *data, size_t len);
+	/// Write data to the underlying transport.  Assumes ownership of data.
+	void (*write_cb) (struct fcgi_muxer *, void *data, size_t len);
 
 	/// Close the underlying transport.  You are allowed to destroy the muxer
 	/// directly from within the callback.
@@ -171,9 +171,7 @@ fcgi_muxer_send (struct fcgi_muxer *self,
 	str_append_data (&message, data, len);
 	str_append_data (&message, zeroes, padding);
 
-	// XXX: we should probably have another write_cb that assumes ownership
 	self->write_cb (self, message.str, message.len);
-	str_free (&message);
 }
 
 static void
@@ -250,14 +248,15 @@ fcgi_request_write (struct fcgi_request *self, const void *data, size_t len)
 /// Mark the request as done.  Returns false if the underlying transport
 /// should be closed, this being the last request.
 static bool
-fcgi_request_finish (struct fcgi_request *self)
+fcgi_request_finish (struct fcgi_request *self, int32_t status_code)
 {
 	fcgi_request_flush (self);
 	fcgi_muxer_send (self->muxer, FCGI_STDOUT, self->request_id, NULL, 0);
 
+	// The appStatus is mostly ignored by web servers and it's not even clear
+	// whether it should be a signed value like it is on Unix, or not
 	fcgi_muxer_send_end_request (self->muxer, self->request_id,
-		0 /* TODO app_status, although ignored */,
-		FCGI_REQUEST_COMPLETE /* TODO protocol_status, may be different */);
+		status_code, FCGI_REQUEST_COMPLETE);
 
 	bool should_close = !(self->flags & FCGI_KEEP_CONN);
 
@@ -288,7 +287,7 @@ fcgi_request_push_params
 
 		self->state = FCGI_REQUEST_STDIN;
 		if (!self->muxer->request_start_cb (self))
-			return fcgi_request_finish (self);
+			return fcgi_request_finish (self, EXIT_SUCCESS);
 	}
 	return true;
 }
@@ -424,7 +423,7 @@ fcgi_muxer_on_abort_request
 		return true;  // We might have just rejected it
 	}
 
-	return fcgi_request_finish (request);
+	return fcgi_request_finish (request, EXIT_FAILURE);
 }
 
 static bool
@@ -730,13 +729,19 @@ ws_handler_on_control_close
 		reason = xstrdup ("");
 
 	if (close_code < 1000 || close_code > 4999)
-		// XXX: invalid close code: maybe we should fail the connection instead
+		// XXX: invalid close code: maybe we should fail the connection instead,
+		//   although the specification doesn't say anything about this case
 		close_code = WS_STATUS_PROTOCOL_ERROR;
+
+	// Update the now potentially different close_code (lol const)
+	if (parser->payload_len >= 2)
+	{
+		parser->input.str[0] = close_code >> 8;
+		parser->input.str[1] = close_code;
+	}
 
 	if (self->state == WS_HANDLER_OPEN)
 	{
-		// Close initiated by the client
-		// FIXME: not sending the potentially different close_code
 		ws_handler_send_control (self, WS_OPCODE_CLOSE,
 			parser->input.str, parser->payload_len);
 
@@ -745,6 +750,7 @@ ws_handler_on_control_close
 			self->on_close (self, close_code, reason);
 	}
 	else
+		// Close initiated by us, flush the write queue and close the transport
 		self->state = WS_HANDLER_FLUSHING;
 
 	free (reason);
@@ -817,7 +823,7 @@ ws_handler_on_ping_timer (EV_P_ ev_timer *watcher, int revents)
 
 	struct ws_handler *self = watcher->data;
 	if (!self->received_pong)
-		ws_handler_fail_connection (self, 4000);
+		ws_handler_fail_connection (self, 4000 /* private use code */);
 	else
 	{
 		// TODO: be an annoying server and send a nonce in the data
@@ -1437,10 +1443,6 @@ json_rpc_handler_info_cmp (const void *first, const void *second)
 		((struct json_rpc_handler_info *) second)->method_name);
 }
 
-// TODO: a method that sends a response after a certain number of seconds.
-//   This has to be owned by the server context as a background job that
-//   removes itself upon completion.
-
 static json_t *
 json_rpc_ping (struct server_context *ctx, json_t *params)
 {
@@ -1574,7 +1576,7 @@ struct request
 
 	/// Callback to close the CGI response, simulates end of program execution.
 	/// CALLING THIS MAY CAUSE THE REQUEST TO BE DESTROYED.
-	void (*close_cb) (struct request *);
+	void (*finish_cb) (struct request *);
 };
 
 /// An interface to detect and handle specific kinds of CGI requests.
@@ -1627,7 +1629,7 @@ request_write (struct request *self, const void *data, size_t len)
 static void
 request_finish (struct request *self)
 {
-	self->close_cb (self);
+	self->finish_cb (self);
 }
 
 /// Starts processing a request.  Returns false if no further action is to be
@@ -1746,16 +1748,15 @@ struct request_handler g_request_handler_json_rpc =
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
+/// Make a URL path canonical.  The resulting path always begins with a slash,
+/// and any trailing slashes are lost.
 static char *
 canonicalize_url_path (const char *path)
 {
-	// XXX: this strips any slashes at the end
 	struct strv v = strv_make ();
 	cstr_split (path, "/", true, &v);
 
 	struct strv canonical = strv_make ();
-
-	// So that the joined path always begins with a slash
 	strv_append (&canonical, "");
 
 	for (size_t i = 0; i < v.len; i++)
@@ -1896,9 +1897,14 @@ request_handler_static_push
 	(void) request;
 	(void) data;
 
-	// Aborting on content; we shouldn't receive any (GET)
-	// FIXME: there should at least be some indication of this happening
-	return len == 0;
+	if (len == 0)
+		return true;
+
+	// Aborting on content; we shouldn't receive any (GET).
+	// In fact, we will only get here once try_handle stops dumping everything
+	// into the write queue at once.
+	print_debug ("the static file handler received data but shouldn't have");
+	return false;
 }
 
 static void
@@ -1977,17 +1983,30 @@ client_destroy (struct client *self)
 }
 
 static void
-client_write (struct client *self, const void *data, size_t len)
+client_write_unsafe (struct client *self, void *data, size_t len)
 {
-	if (!soft_assert (!self->flushing) || len == 0)
-		return;
-
 	struct write_req *req = xcalloc (1, sizeof *req);
-	req->data.iov_base = memcpy (xmalloc (len), data, len);
+	req->data.iov_base = data;
 	req->data.iov_len = len;
 
 	write_queue_add (&self->write_queue, req);
 	ev_io_start (EV_DEFAULT_ &self->write_watcher);
+}
+
+static void
+client_write_owned (struct client *self, void *data, size_t len)
+{
+	if (soft_assert (!self->flushing) && len != 0)
+		client_write_unsafe (self, data, len);
+	else
+		free (data);
+}
+
+static void
+client_write (struct client *self, const void *data, size_t len)
+{
+	if (soft_assert (!self->flushing) && len != 0)
+		client_write_unsafe (self, memcpy (xmalloc (len), data, len), len);
 }
 
 /// Half-close the connection from our side once the write_queue is flushed.
@@ -2152,14 +2171,16 @@ client_fcgi_request_write_cb (struct request *req, const void *data, size_t len)
 	fcgi_request_write (self->fcgi_request, data, len);
 }
 
+// XXX: it should be possible to pass a specific status code but we'd have to
+//   allow it in multiple places over this code base, notably request_push()
 static void
-client_fcgi_request_close_cb (struct request *req)
+client_fcgi_request_finish_cb (struct request *req)
 {
 	FIND_CONTAINER (self, req, struct client_fcgi_request, request);
 	struct fcgi_muxer *muxer = self->fcgi_request->muxer;
 	// No more data to send, terminate the substream/request,
 	// and also the transport if the client didn't specifically ask to keep it
-	if (!fcgi_request_finish (self->fcgi_request))
+	if (!fcgi_request_finish (self->fcgi_request, EXIT_SUCCESS))
 		muxer->close_cb (muxer);
 }
 
@@ -2172,9 +2193,9 @@ client_fcgi_request_start (struct fcgi_request *fcgi_request)
 		fcgi_request->handler_data = xcalloc (1, sizeof *request);
 	request->fcgi_request = fcgi_request;
 	request_init (&request->request);
-	request->request.ctx = ev_userdata (EV_DEFAULT);
-	request->request.write_cb = client_fcgi_request_write_cb;
-	request->request.close_cb = client_fcgi_request_close_cb;
+	request->request.ctx       = ev_userdata (EV_DEFAULT);
+	request->request.write_cb  = client_fcgi_request_write_cb;
+	request->request.finish_cb = client_fcgi_request_finish_cb;
 
 	return request_start (&request->request, &fcgi_request->headers);
 }
@@ -2185,7 +2206,7 @@ client_fcgi_request_push
 {
 	struct client_fcgi_request *request = req->handler_data;
 	return request_push (&request->request, data, len)
-		|| fcgi_request_finish (req);
+		|| fcgi_request_finish (req, EXIT_SUCCESS);
 }
 
 static void
@@ -2199,10 +2220,10 @@ client_fcgi_request_finalize (struct fcgi_request *req)
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 static void
-client_fcgi_write_cb (struct fcgi_muxer *mux, const void *data, size_t len)
+client_fcgi_write_cb (struct fcgi_muxer *mux, void *data, size_t len)
 {
 	FIND_CONTAINER (self, mux, struct client_fcgi, muxer);
-	client_write (&self->client, data, len);
+	client_write_owned (&self->client, data, len);
 }
 
 static void
@@ -2278,10 +2299,9 @@ client_scgi_write_cb (struct request *req, const void *data, size_t len)
 }
 
 static void
-client_scgi_close_cb (struct request *req)
+client_scgi_finish_cb (struct request *req)
 {
 	FIND_CONTAINER (self, req, struct client_scgi, request);
-	// NOTE: this rather really means "close me [the request]"
 	client_close (&self->client);
 }
 
@@ -2358,7 +2378,7 @@ client_scgi_create (EV_P_ int sock_fd)
 	request_init (&self->request);
 	self->request.ctx            = ev_userdata (EV_DEFAULT);
 	self->request.write_cb       = client_scgi_write_cb;
-	self->request.close_cb       = client_scgi_close_cb;
+	self->request.finish_cb      = client_scgi_finish_cb;
 
 	self->parser = scgi_parser_make ();
 	self->parser.on_headers_read = client_scgi_on_headers_read;
