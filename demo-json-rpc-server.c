@@ -194,6 +194,8 @@ fcgi_request_new (void)
 
 	self->hdr_parser = fcgi_nv_parser_make ();
 	self->hdr_parser.output = &self->headers;
+
+	self->output_buffer = str_make ();
 	return self;
 }
 
@@ -206,40 +208,6 @@ fcgi_request_destroy (struct fcgi_request *self)
 	str_map_free (&self->headers);
 	fcgi_nv_parser_free (&self->hdr_parser);
 	free (self);
-}
-
-static void
-fcgi_request_push_params
-	(struct fcgi_request *self, const void *data, size_t len)
-{
-	if (self->state != FCGI_REQUEST_PARAMS)
-	{
-		// TODO: probably reject the request
-		return;
-	}
-
-	if (len)
-		fcgi_nv_parser_push (&self->hdr_parser, data, len);
-	else
-	{
-		// TODO: probably check the state of the header parser
-		// TODO: request_start() can return false, end the request here?
-		(void) self->muxer->request_start_cb (self);
-		self->state = FCGI_REQUEST_STDIN;
-	}
-}
-
-static void
-fcgi_request_push_stdin
-	(struct fcgi_request *self, const void *data, size_t len)
-{
-	if (self->state != FCGI_REQUEST_STDIN)
-	{
-		// TODO: probably reject the request
-		return;
-	}
-
-	self->muxer->request_push_cb (self, data, len);
 }
 
 static void
@@ -294,36 +262,62 @@ fcgi_request_finish (struct fcgi_request *self)
 	self->muxer->requests[self->request_id] = NULL;
 	fcgi_request_destroy (self);
 
-	// TODO: tear down (shut down) the connection.  This is called from:
-	//
-	//   1. client_fcgi_request_push <- request_push_cb
-	//     <- fcgi_request_push_stdin <- fcgi_muxer_on_stdin
-	//     <- fcgi_muxer_on_message <- fcgi_parser_push <- fcgi_muxer_push
-	//     <- client_fcgi_push <- client_read_loop
-	//     => in this case no close_cb may be called
-	//     -> need to pass a false boolean aaall the way up,
-	//        then client_fcgi_finalize eventually cleans up the rest
-	//
-	//   2. client_fcgi_request_close_cb <- request_finish
-	//     => our direct caller must call fcgi_muxer::close_cb
-	//     -> not very nice to delegate it there
 	return !should_close;
+}
+
+static bool
+fcgi_request_push_params
+	(struct fcgi_request *self, const void *data, size_t len)
+{
+	if (self->state != FCGI_REQUEST_PARAMS)
+	{
+		print_debug ("FastCGI: expected %s, got %s",
+			STRINGIFY (FCGI_STDIN), STRINGIFY (FCGI_PARAMS));
+		return false;
+	}
+
+	if (len)
+		fcgi_nv_parser_push (&self->hdr_parser, data, len);
+	else
+	{
+		if (self->hdr_parser.state != FCGI_NV_PARSER_NAME_LEN)
+			print_debug ("FastCGI: request headers seem to be cut off");
+
+		self->state = FCGI_REQUEST_STDIN;
+		if (!self->muxer->request_start_cb (self))
+			return fcgi_request_finish (self);
+	}
+	return true;
+}
+
+static bool
+fcgi_request_push_stdin
+	(struct fcgi_request *self, const void *data, size_t len)
+{
+	if (self->state != FCGI_REQUEST_STDIN)
+	{
+		print_debug ("FastCGI: expected %s, got %s",
+			STRINGIFY (FCGI_PARAMS), STRINGIFY (FCGI_STDIN));
+		return false;
+	}
+
+	return self->muxer->request_push_cb (self, data, len);
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-typedef void (*fcgi_muxer_handler_fn)
+typedef bool (*fcgi_muxer_handler_fn)
 	(struct fcgi_muxer *, const struct fcgi_parser *);
 
-static void
+static bool
 fcgi_muxer_on_get_values
 	(struct fcgi_muxer *self, const struct fcgi_parser *parser)
 {
 	if (parser->request_id != FCGI_NULL_REQUEST_ID)
 	{
-		print_debug ("FastCGI: ignoring invalid %s message",
+		print_debug ("FastCGI: invalid %s message",
 			STRINGIFY (FCGI_GET_VALUES));
-		return;
+		return false;
 	}
 
 	struct str_map values   = str_map_make (free);
@@ -357,9 +351,10 @@ fcgi_muxer_on_get_values
 
 	str_map_free (&values);
 	str_map_free (&response);
+	return true;
 }
 
-static void
+static bool
 fcgi_muxer_on_begin_request
 	(struct fcgi_muxer *self, const struct fcgi_parser *parser)
 {
@@ -375,16 +370,17 @@ fcgi_muxer_on_begin_request
 
 	if (!success)
 	{
-		print_debug ("FastCGI: ignoring invalid %s message",
+		print_debug ("FastCGI: invalid %s message",
 			STRINGIFY (FCGI_BEGIN_REQUEST));
-		return;
+		return false;
 	}
 
 	struct fcgi_request *request = self->requests[parser->request_id];
 	if (parser->request_id == FCGI_NULL_REQUEST_ID || request)
 	{
-		// TODO: fail
-		return;
+		print_debug ("FastCGI: unusable request ID in %s message",
+			STRINGIFY (FCGI_BEGIN_REQUEST));
+		return false;
 	}
 
 	// We can only act as a responder, reject everything else up front
@@ -392,7 +388,7 @@ fcgi_muxer_on_begin_request
 	{
 		fcgi_muxer_send_end_request (self,
 			parser->request_id, 0, FCGI_UNKNOWN_ROLE);
-		return;
+		return true;
 	}
 
 	if (parser->request_id >= N_ELEMENTS (self->requests)
@@ -400,7 +396,7 @@ fcgi_muxer_on_begin_request
 	{
 		fcgi_muxer_send_end_request (self,
 			parser->request_id, 0, FCGI_OVERLOADED);
-		return;
+		return true;
 	}
 
 	request = fcgi_request_new ();
@@ -410,9 +406,10 @@ fcgi_muxer_on_begin_request
 
 	self->requests[parser->request_id] = request;
 	self->active_requests++;
+	return true;
 }
 
-static void
+static bool
 fcgi_muxer_on_abort_request
 	(struct fcgi_muxer *self, const struct fcgi_parser *parser)
 {
@@ -421,15 +418,13 @@ fcgi_muxer_on_abort_request
 	{
 		print_debug ("FastCGI: received %s for an unknown request",
 			STRINGIFY (FCGI_ABORT_REQUEST));
-		return;
+		return true;  // We might have just rejected it
 	}
 
-	// TODO: abort the request: let it somehow produce FCGI_END_REQUEST,
-	// make sure to send an stdout EOF record
-	// TODO: and if that was not a FCGI_KEEP_CONN request, close the transport
+	return fcgi_request_finish (request);
 }
 
-static void
+static bool
 fcgi_muxer_on_params (struct fcgi_muxer *self, const struct fcgi_parser *parser)
 {
 	struct fcgi_request *request = self->requests[parser->request_id];
@@ -437,14 +432,15 @@ fcgi_muxer_on_params (struct fcgi_muxer *self, const struct fcgi_parser *parser)
 	{
 		print_debug ("FastCGI: received %s for an unknown request",
 			STRINGIFY (FCGI_PARAMS));
-		return;
+		return true;  // We might have just rejected it
 	}
 
-	fcgi_request_push_params (request,
+	// This may immediately finish and delete the request, but that's fine
+	return fcgi_request_push_params (request,
 		parser->content.str, parser->content.len);
 }
 
-static void
+static bool
 fcgi_muxer_on_stdin (struct fcgi_muxer *self, const struct fcgi_parser *parser)
 {
 	struct fcgi_request *request = self->requests[parser->request_id];
@@ -452,15 +448,15 @@ fcgi_muxer_on_stdin (struct fcgi_muxer *self, const struct fcgi_parser *parser)
 	{
 		print_debug ("FastCGI: received %s for an unknown request",
 			STRINGIFY (FCGI_STDIN));
-		return;
+		return true;  // We might have just rejected it
 	}
 
 	// At the end of the stream, a zero-length record is received
-	fcgi_request_push_stdin (request,
+	return fcgi_request_push_stdin (request,
 		parser->content.str, parser->content.len);
 }
 
-static void
+static bool
 fcgi_muxer_on_message (const struct fcgi_parser *parser, void *user_data)
 {
 	struct fcgi_muxer *self = user_data;
@@ -468,8 +464,7 @@ fcgi_muxer_on_message (const struct fcgi_parser *parser, void *user_data)
 	if (parser->version != FCGI_VERSION_1)
 	{
 		print_debug ("FastCGI: unsupported version %d", parser->version);
-		// TODO: also return false to stop processing on protocol error?
-		return;
+		return false;
 	}
 
 	static const fcgi_muxer_handler_fn handlers[] =
@@ -489,10 +484,10 @@ fcgi_muxer_on_message (const struct fcgi_parser *parser, void *user_data)
 		uint8_t content[8] = { parser->type };
 		fcgi_muxer_send (self, FCGI_UNKNOWN_TYPE, parser->request_id,
 			content, sizeof content);
-		return;
+		return true;
 	}
 
-	handler (self, parser);
+	return handler (self, parser);
 }
 
 static void
@@ -520,10 +515,10 @@ fcgi_muxer_free (struct fcgi_muxer *self)
 	fcgi_parser_free (&self->parser);
 }
 
-static void
+static bool
 fcgi_muxer_push (struct fcgi_muxer *self, const void *data, size_t len)
 {
-	fcgi_parser_push (&self->parser, data, len);
+	return fcgi_parser_push (&self->parser, data, len);
 }
 
 /// @}
@@ -1574,7 +1569,7 @@ struct request
 	/// Callback to write some CGI response data to the output
 	void (*write_cb) (struct request *, const void *data, size_t len);
 
-	/// Callback to close the connection.
+	/// Callback to close the CGI response, simulates end of program execution.
 	/// CALLING THIS MAY CAUSE THE REQUEST TO BE DESTROYED.
 	void (*close_cb) (struct request *);
 };
@@ -1967,7 +1962,7 @@ client_destroy (struct client *self)
 static void
 client_write (struct client *self, const void *data, size_t len)
 {
-	if (!soft_assert (!self->flushing))
+	if (!soft_assert (!self->flushing) || len == 0)
 		return;
 
 	struct write_req *req = xcalloc (1, sizeof *req);
@@ -2206,8 +2201,7 @@ static bool
 client_fcgi_push (struct client *client, const void *data, size_t len)
 {
 	FIND_CONTAINER (self, client, struct client_fcgi, client);
-	fcgi_muxer_push (&self->muxer, data, len);
-	return true;
+	return fcgi_muxer_push (&self->muxer, data, len);
 }
 
 static void
