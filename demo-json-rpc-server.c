@@ -1642,6 +1642,15 @@ request_start (struct request *self, struct str_map *headers)
 	//   Another way we could get rid of the continue_ argument is via adding
 	//   some way of marking the request as finished from within the handler.
 
+	if (g_debug_mode)
+	{
+		struct str_map_iter iter = str_map_iter_make (headers);
+		const char *value;
+		while ((value = str_map_iter_next (&iter)))
+			print_debug ("%s: %s", iter.link->key, value);
+		print_debug ("--");
+	}
+
 	bool continue_ = true;
 	LIST_FOR_EACH (struct request_handler, handler, self->ctx->handlers)
 		if (handler->try_handle (self, headers, &continue_))
@@ -1800,6 +1809,8 @@ request_handler_static_try_handle
 		return false;
 	}
 
+	// TODO: implement HEAD, we don't get that for free;
+	//   probably implies adding Content-Length
 	const char *method = str_map_find (headers, "REQUEST_METHOD");
 	if (!method || strcmp (method, "GET"))
 		return false;
@@ -1807,8 +1818,10 @@ request_handler_static_try_handle
 	// TODO: look at <SCRIPT_NAME, PATH_INFO>, REQUEST_URI in the headers
 	const char *path_info = str_map_find (headers, "PATH_INFO");
 	if (!path_info)
+		path_info = str_map_find (headers, "REQUEST_URI");
+	if (!path_info)
 	{
-		print_debug ("PATH_INFO not defined");
+		print_debug ("neither PATH_INFO nor REQUEST_URI was defined");
 		return false;
 	}
 
@@ -1816,6 +1829,7 @@ request_handler_static_try_handle
 	// Being able to read /etc/passwd would be rather embarrasing
 	char *suffix = canonicalize_url_path (path_info);
 	char *path = xstrdup_printf ("%s%s", root, suffix);
+	print_debug ("trying to statically serve %s", path);
 
 	// TODO: check that this is a regular file
 	FILE *fp = fopen (path, "rb");
