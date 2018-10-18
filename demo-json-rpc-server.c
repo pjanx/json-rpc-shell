@@ -2339,6 +2339,7 @@ client_scgi_create (EV_P_ int sock_fd)
 	self->client.vtable = &client_scgi_vtable;
 
 	request_init (&self->request);
+	self->request.ctx            = ev_userdata (EV_DEFAULT);
 	self->request.write_cb       = client_scgi_write_cb;
 	self->request.close_cb       = client_scgi_close_cb;
 
