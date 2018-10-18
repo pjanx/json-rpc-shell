@@ -70,6 +70,16 @@ include_directories (${PROJECT_BINARY_DIR})
 add_executable (${PROJECT_NAME} ${PROJECT_NAME}.c http-parser/http_parser.c)
 target_link_libraries (${PROJECT_NAME} ${project_libraries})
 
+# Development tools
+find_package (LibMagic)
+if (LIBMAGIC_FOUND)
+	include_directories (${LIBMAGIC_INCLUDE_DIRS})
+	add_executable (json-rpc-test-server
+		json-rpc-test-server.c http-parser/http_parser.c)
+	target_link_libraries (json-rpc-test-server
+		${project_libraries} ${LIBMAGIC_LIBRARIES})
+endif ()
+
 # The files to be installed
 include (GNUInstallDirs)
 install (TARGETS ${PROJECT_NAME} DESTINATION ${CMAKE_INSTALL_BINDIR})

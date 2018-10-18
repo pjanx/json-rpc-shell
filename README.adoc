@@ -67,6 +67,12 @@ Note that for versions of CMake before 2.8.9, you need to prefix `cpack` with
 
 Run the program with `--help` to obtain usage information.
 
+Test server
+-----------
+If you install development packages for libmagic, an included test server will
+be built but not installed which provides a trivial JSON-RPC 2.0 service with
+FastCGI, SCGI, and WebSocket interfaces.  It responds to the `ping` method.
+
 Contributing and Support
 ------------------------
 Use https://git.janouch.name/p/json-rpc-shell to report bugs, request features,
