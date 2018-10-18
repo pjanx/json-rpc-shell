@@ -1,5 +1,5 @@
 /*
- * demo-json-rpc-server.c: JSON-RPC 2.0 demo server
+ * json-rpc-test-server.c: JSON-RPC 2.0 demo server
  *
  * Copyright (c) 2015 - 2018, Přemysl Janouch <p@janouch.name>
  *
