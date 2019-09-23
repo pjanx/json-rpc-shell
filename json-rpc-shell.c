@@ -3184,8 +3184,6 @@ process_edited_input (struct app_context *ctx)
 		print_error ("could not unlink `%s': %s",
 			ctx->editor_filename, strerror (errno));
 
-	free (ctx->editor_filename);
-	ctx->editor_filename = NULL;
 	str_free (&input);
 }
 
@@ -3203,7 +3201,7 @@ on_child (EV_P_ ev_child *handle, int revents)
 		kill (-handle->rpid, SIGKILL);
 		return;
 	}
-	// I don't recognize this child (we should also check PID)
+	// I don't recognize this child (we should also check its PID)
 	if (!ctx->editor_filename)
 		return;
 
@@ -3216,6 +3214,9 @@ on_child (EV_P_ ev_child *handle, int revents)
 		print_error ("editor returned status %d", WEXITSTATUS (status));
 	else
 		process_edited_input (ctx);
+
+	free (ctx->editor_filename);
+	ctx->editor_filename = NULL;
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -3250,8 +3251,14 @@ on_tty_readable (EV_P_ ev_io *handle, int revents)
 	{
 		// rl_callback_read_char() is not reentrant, may happen on EOF
 		ev_io_stop (EV_DEFAULT_ &ctx->tty_watcher);
+
 		ctx->input->vtable->on_tty_readable (ctx->input);
-		ev_io_start (EV_DEFAULT_ &ctx->tty_watcher);
+
+		// Don't make ourselves receive a SIGTTIN.  Ideally we'd prevent
+		// reentrancy without inciting conflicts with
+		// {suspend,resume}_terminal() but I can't figure anything out.
+		if (!ctx->editor_filename)
+			ev_io_start (EV_DEFAULT_ &ctx->tty_watcher);
 	}
 }
 
