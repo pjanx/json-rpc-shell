@@ -3177,9 +3177,16 @@ process_edited_input (struct app_context *ctx)
 		print_error ("%s: %s", "input editing failed", e->message);
 		error_free (e);
 	}
-	else if (!ctx->input->vtable->replace_line (ctx->input, input.str))
-		print_error ("%s: %s", "input editing failed",
-			"could not re-insert modified text");
+	else
+	{
+		// Strip trailing newlines, added automatically by editors
+		while (input.len && strchr ("\r\n", input.str[input.len - 1]))
+			input.str[--input.len] = 0;
+
+		if (!ctx->input->vtable->replace_line (ctx->input, input.str))
+			print_error ("%s: %s", "input editing failed",
+				"could not re-insert modified text");
+	}
 
 	if (unlink (ctx->editor_filename))
 		print_error ("could not unlink `%s': %s",
