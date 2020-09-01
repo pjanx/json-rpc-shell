@@ -2739,8 +2739,19 @@ display_via_pipeline (struct app_context *ctx,
 }
 
 static bool
-parse_response (struct app_context *ctx, struct str *buf, const char *pipeline)
+process_response (struct app_context *ctx, const json_t *id, struct str *buf,
+	const char *pipeline)
 {
+	if (!id)
+	{
+		printf ("[Notification]\n");
+		if (!buf->len)
+			return true;
+
+		print_warning ("we have been sent data back for a notification");
+		return false;
+	}
+
 	json_error_t e;
 	json_t *response;
 	if (!(response = json_loadb (buf->str, buf->len, JSON_DECODE_ANY, &e)))
@@ -2759,9 +2770,15 @@ parse_response (struct app_context *ctx, struct str *buf, const char *pipeline)
 	else if (!json_is_string (v) || strcmp (json_string_value (v), "2.0"))
 		print_warning ("invalid `%s' field in response", "jsonrpc");
 
-	json_t *result = json_object_get (response, "result");
-	json_t *error  = json_object_get (response, "error");
-	json_t *data   = NULL;
+	json_t *returned_id = json_object_get (response, "id");
+	json_t *result      = json_object_get (response, "result");
+	json_t *error       = json_object_get (response, "error");
+	json_t *data        = NULL;
+
+	if (!returned_id)
+		print_warning ("`%s' field not present in response", "id");
+	if (!json_equal (id, returned_id))
+		print_warning ("mismatching `%s' field in response", "id");
 
 	if (!result && !error)
 		PARSE_FAIL ("neither `result' nor `error' present in response");
@@ -2906,19 +2923,7 @@ make_json_rpc_call (struct app_context *ctx,
 		free (buf_term);
 	}
 
-	bool success = false;
-	if (id)
-		success = parse_response (ctx, &buf, pipeline);
-	else
-	{
-		printf ("[Notification]\n");
-		if (buf.len)
-			print_warning ("we have been sent data back for a notification");
-		else
-			success = true;
-	}
-
-	if (!success)
+	if (!process_response (ctx, id, &buf, pipeline))
 	{
 		char *s = iconv_xstrdup (ctx->term_from_utf8,
 			buf.str, buf.len + 1 /* null byte */, NULL);
