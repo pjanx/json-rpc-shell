@@ -531,7 +531,8 @@ input_el_redisplay (struct input_el *self)
 	el_push (self->editline, x);
 
 	// We have to do this or it gets stuck and nothing is done
-	(void) el_gets (self->editline, NULL);
+	int count = 0;
+	(void) el_wgets (self->editline, &count);
 }
 
 static char *
