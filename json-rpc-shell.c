@@ -2892,6 +2892,20 @@ make_json_rpc_call (struct app_context *ctx,
 		goto fail;
 	}
 
+	if (ctx->verbose)
+	{
+		char *buf_term =
+			iconv_xstrdup (ctx->term_from_utf8, buf.str, buf.len, NULL);
+		if (!buf_term)
+			print_error ("%s: %s", "verbose", "character conversion failed");
+		else
+		{
+			print_attributed (ctx, stdout, ATTR_INCOMING, "%s", buf_term);
+			fputs ("\n", stdout);
+		}
+		free (buf_term);
+	}
+
 	bool success = false;
 	if (id)
 		success = parse_response (ctx, &buf, pipeline);
@@ -2911,7 +2925,7 @@ make_json_rpc_call (struct app_context *ctx,
 		if (!s)
 			print_error ("character conversion failed for `%s'",
 				"raw response data");
-		else
+		else if (!ctx->verbose /* already printed */)
 			printf ("%s: %s\n", "raw response data", s);
 		free (s);
 	}
