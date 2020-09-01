@@ -619,7 +619,6 @@ input_el_on_run_editor (EditLine *editline, int key)
 static void
 input_el_install_prompt (struct input_el *self)
 {
-	// XXX: the ignore doesn't quite work, see https://gnats.netbsd.org/47539
 	el_set (self->editline, EL_PROMPT_ESC,
 		input_el_make_prompt, INPUT_START_IGNORE);
 }
@@ -634,7 +633,7 @@ input_el_start (struct input *input, const char *program_name)
 	el_set (self->editline, EL_CLIENTDATA, self);
 	input_el_install_prompt (self);
 	el_set (self->editline, EL_SIGNAL, false);
-	el_set (self->editline, EL_UNBUFFERED, true);
+	el_set (self->editline, EL_UNBUFFERED, isatty (fileno (stdin)));
 	el_set (self->editline, EL_EDITOR, "emacs");
 	el_wset (self->editline, EL_HIST, history_w, self->history);
 
@@ -833,6 +832,17 @@ input_el_on_tty_readable (struct input *input)
 	// we must use the wide-character interface
 	int count = 0;
 	const wchar_t *buf = el_wgets (self->editline, &count);
+
+	// Editline works in a funny NO_TTY mode when the input is not a tty,
+	// we cannot use EL_UNBUFFERED and expect sane results then
+	int unbuffered = 0;
+	if (!el_get (self->editline, EL_UNBUFFERED, &unbuffered) && !unbuffered)
+	{
+		char *entered_line = buf ? input_el_wcstombs (buf) : NULL;
+		self->super.on_input (entered_line, self->super.user_data);
+		free (entered_line);
+		return;
+	}
 
 	// Process data from our newline handler (async-friendly handling)
 	if (self->entered_line)
