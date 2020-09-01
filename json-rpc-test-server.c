@@ -1458,12 +1458,35 @@ json_rpc_ping (struct server_context *ctx, json_t *params)
 }
 
 static json_t *
+json_rpc_date (struct server_context *ctx, json_t *params)
+{
+	(void) ctx;
+
+	if (params && !json_is_null (params))
+		return json_rpc_response (NULL, NULL,
+			json_rpc_error (JSON_RPC_ERROR_INVALID_PARAMS, NULL));
+
+	time_t now = time (NULL);
+	const struct tm *tm = localtime (&now);
+	json_t *x = json_object ();
+
+	json_object_set_new (x, "year",    json_integer (tm->tm_year + 1900));
+	json_object_set_new (x, "month",   json_integer (tm->tm_mon + 1));
+	json_object_set_new (x, "day",     json_integer (tm->tm_mday));
+	json_object_set_new (x, "hours",   json_integer (tm->tm_hour));
+	json_object_set_new (x, "minutes", json_integer (tm->tm_min));
+	json_object_set_new (x, "seconds", json_integer (tm->tm_sec));
+	return json_rpc_response (NULL, x, NULL);
+}
+
+static json_t *
 process_json_rpc_request (struct server_context *ctx, json_t *request)
 {
 	// A list of all available methods; this list has to be ordered.
 	// Eventually it might be better to move this into a map in the context.
 	static struct json_rpc_handler_info handlers[] =
 	{
+		{ "date", json_rpc_date },
 		{ "ping", json_rpc_ping },
 	};
 
