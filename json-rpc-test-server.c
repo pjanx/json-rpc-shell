@@ -1449,7 +1449,10 @@ static json_t *
 json_rpc_ping (struct server_context *ctx, json_t *params)
 {
 	(void) ctx;
-	(void) params;
+
+	if (params && !json_is_null (params))
+		return json_rpc_response (NULL, NULL,
+			json_rpc_error (JSON_RPC_ERROR_INVALID_PARAMS, NULL));
 
 	return json_rpc_response (NULL, json_string ("pong"), NULL);
 }
