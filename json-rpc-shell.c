@@ -3460,7 +3460,7 @@ main (int argc, char *argv[])
 	{
 		// XXX: to be completely correct, we should use tputs, but we cannot
 		g_ctx.input->vtable->set_prompt (g_ctx.input,
-			xstrdup_printf ("%c%s%cjson-rpc> %c%s%c",
+			xstrdup_printf ("%c%s%cjson-rpc>%c%s%c ",
 				INPUT_START_IGNORE, g_ctx.attrs[ATTR_PROMPT],
 				INPUT_END_IGNORE,
 				INPUT_START_IGNORE, g_ctx.attrs[ATTR_RESET],
