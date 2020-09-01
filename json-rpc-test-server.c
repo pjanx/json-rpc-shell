@@ -1,7 +1,7 @@
 /*
  * json-rpc-test-server.c: JSON-RPC 2.0 demo server
  *
- * Copyright (c) 2015 - 2018, Přemysl Janouch <p@janouch.name>
+ * Copyright (c) 2015 - 2018, Přemysl Eric Janouch <p@janouch.name>
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted.
