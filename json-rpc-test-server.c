@@ -1428,6 +1428,8 @@ end:
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
+/// Handlers must not set the `id` field in their responses, that will be filled
+/// in automatically according to whether the request is a notification or not.
 typedef json_t *(*json_rpc_handler_fn) (struct server_context *, json_t *);
 
 struct json_rpc_handler_info
@@ -1493,7 +1495,10 @@ process_json_rpc_request (struct server_context *ctx, json_t *request)
 
 	json_t *response = handler->handler (ctx, params);
 	if (id)
+	{
+		(void) json_object_set (response, "id", id);
 		return response;
+	}
 
 	// Notifications don't get responses
 	json_decref (response);
