@@ -17,38 +17,28 @@ you get the following niceties:
  - ability to pipe output through a shell command, so that you can view the
    results in your favourite editor or redirect them to a file
  - ability to edit the input line in your favourite editor as well with Alt+E
+ - WebSockets (RFC 6455) can also be used as a transport rather than HTTP
 
-Supported transports
---------------------
- - HTTP
- - HTTPS
- - WebSocket
- - WebSocket over TLS
-
-WebSockets
-~~~~~~~~~~
-The JSON-RPC 2.0 spec doesn't say almost anything about underlying transports.
-The way it's implemented here is that every request is sent as a single text
-message.  If it has an "id" field, i.e. it's not just a notification, the
-client waits for a message from the server in response.
-
-There's no support so far for any protocol extensions, nor for specifying
-the higher-level protocol (the "Sec-Ws-Protocol" HTTP field).
+Documentation
+-------------
+See the link:json-rpc-shell.adoc[man page] for information about usage.
+The rest of this README will concern itself with externalities.
 
 Packages
 --------
 Regular releases are sporadic.  git master should be stable enough.  You can get
 a package with the latest development version from Archlinux's AUR.
 
-Building and Usage
-------------------
-Build dependencies: CMake, pkg-config, help2man,
+Building
+--------
+Build dependencies: CMake, pkg-config, asciidoctor,
                     liberty (included), http-parser (included) +
 Runtime dependencies: libev, Jansson, cURL, openssl,
                       readline or libedit >= 2013-07-12,
 
 Avoid libedit if you can, in general it works but at the moment history is
-acting up and I have no clue about fixing it.
+acting up and I have no clue about fixing it.  Multiline editing is also
+misbehaving there.
 
  $ git clone --recursive https://git.janouch.name/p/json-rpc-shell.git
  $ mkdir json-rpc-shell/build
@@ -68,13 +58,12 @@ Or you can try telling CMake to make a package for you.  For Debian it is:
 Note that for versions of CMake before 2.8.9, you need to prefix `cpack` with
 `fakeroot` or file ownership will end up wrong.
 
-Run the program with `--help` to obtain usage information.
-
 Test server
 -----------
 If you install development packages for libmagic, an included test server will
 be built but not installed which provides a trivial JSON-RPC 2.0 service with
-FastCGI, SCGI, and WebSocket interfaces.  It responds to the `ping` method.
+FastCGI, SCGI, and WebSocket interfaces.  It responds to `ping` and `date`
+methods and it can serve static files.
 
 Contributing and Support
 ------------------------

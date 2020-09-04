@@ -3339,13 +3339,16 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv,
 	static const struct opt opts[] =
 	{
 		{ 'd', "debug", NULL, 0, "run in debug mode" },
-		{ 'h', "help", NULL, 0, "display this help and exit" },
+		{ 'h', "help", NULL, 0, "display this help message and exit" },
 		{ 'V', "version", NULL, 0, "output version information and exit" },
+		// TODO: consider making this the default and instead adding
+		// an option to accept JSON null as an id.
 		{ 'a', "auto-id", NULL, 0, "automatic `id' fields" },
 		{ 'o', "origin", "O", 0, "set the HTTP Origin header" },
+		// TODO: consider inverting this to -c/--compact-output
 		{ 'p', "pretty", NULL, 0, "pretty-print the responses" },
 		{ 't', "trust-all", NULL, 0, "don't care about SSL/TLS certificates" },
-		{ 'v', "verbose", NULL, 0, "print the request before sending" },
+		{ 'v', "verbose", NULL, 0, "print raw requests and responses" },
 		{ 'c', "color", "WHEN", OPT_LONG_ONLY,
 		  "colorize output: never, always, or auto" },
 		{ 'w', "write-default-cfg", "FILENAME",
@@ -3355,7 +3358,7 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv,
 	};
 
 	struct opt_handler oh = opt_handler_make (argc, argv, opts,
-		"ENDPOINT", "Simple JSON-RPC shell.");
+		"ENDPOINT", "A simple JSON-RPC 2.0 shell.");
 
 	int c;
 	while ((c = opt_handler_get (&oh)) != -1)

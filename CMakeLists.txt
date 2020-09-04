@@ -87,18 +87,20 @@ install (PROGRAMS json-format.pl DESTINATION ${CMAKE_INSTALL_BINDIR})
 install (FILES LICENSE DESTINATION ${CMAKE_INSTALL_DOCDIR})
 
 # Generate documentation from program help
-find_program (HELP2MAN_EXECUTABLE help2man)
-if (NOT HELP2MAN_EXECUTABLE)
-	message (FATAL_ERROR "help2man not found")
-endif (NOT HELP2MAN_EXECUTABLE)
+find_program (ASCIIDOCTOR_EXECUTABLE asciidoctor)
+if (NOT ASCIIDOCTOR_EXECUTABLE)
+	message (FATAL_ERROR "asciidoctor not found")
+endif (NOT ASCIIDOCTOR_EXECUTABLE)
 
 foreach (page ${PROJECT_NAME})
 	set (page_output "${PROJECT_BINARY_DIR}/${page}.1")
 	list (APPEND project_MAN_PAGES "${page_output}")
 	add_custom_command (OUTPUT ${page_output}
-		COMMAND ${HELP2MAN_EXECUTABLE} -N
-			"${PROJECT_BINARY_DIR}/${page}" -o ${page_output}
-		DEPENDS ${page}
+		COMMAND ${ASCIIDOCTOR_EXECUTABLE} -b manpage
+			-a release-version=${project_VERSION}
+			"${PROJECT_SOURCE_DIR}/${page}.adoc"
+			-o "${page_output}"
+		DEPENDS ${page}.adoc
 		COMMENT "Generating man page for ${page}" VERBATIM)
 endforeach (page)
 
@@ -111,7 +113,8 @@ foreach (page ${project_MAN_PAGES})
 endforeach (page)
 
 # CPack
-set (CPACK_PACKAGE_DESCRIPTION_SUMMARY "Shell for running JSON-RPC 2.0 queries")
+set (CPACK_PACKAGE_DESCRIPTION_SUMMARY
+	"A shell for running JSON-RPC 2.0 queries")
 set (CPACK_PACKAGE_VENDOR "Premysl Eric Janouch")
 set (CPACK_PACKAGE_CONTACT "Přemysl Eric Janouch <p@janouch.name>")
 set (CPACK_RESOURCE_FILE_LICENSE "${PROJECT_SOURCE_DIR}/LICENSE")

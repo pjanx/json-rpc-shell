@@ -1,0 +1,183 @@
+json-rpc-shell(1)
+=================
+:doctype: manpage
+:man manual: json-rpc-shell Manual
+:man source: json-rpc-shell {release-version}
+
+Name
+----
+json-rpc-shell - a simple JSON-RPC 2.0 shell
+
+Synopsis
+--------
+*json-rpc-shell* [_OPTION_]... _ENDPOINT_
+
+Description
+-----------
+The _ENDPOINT_ must be either an HTTP or a WebSocket URL, with or without TLS
+(i.e. one of the _http://_, _https://_, _ws://_, _wss://_ schemas).
+
+*json-rpc-shell* will use it to send any JSON-RPC 2.0 requests you enter on its
+command line. The server's response will be parsed and validated, stripping it
+of the protocol's noisy envelope.  At your option, it can then also be
+pretty-printed, rendered with adjustable syntax highlighting, or even piped
+through another program such as the *less*(1) pager or the *jq*(1) JSON
+processor.
+
+Usage
+~~~~~
+Three things may appear on the internal command line, in a sequence.  The first
+one must always be the name of the JSON-RPC method to call, as a bare word,
+separated from the rest by white space.  Following that, you may enter two kinds
+of JSON values.  If it is a string, a number, or a null value, it is taken as
+the "id" to use for the request.  If it is an object or an array, it constitutes
+the method parameters.  Booleans may appear in neither.
+
+The response to the method call may be piped through external commands, the same
+way you would do it in a Unix shell.
+
+Exit the program by pressing C-c or C-d.  No special keywords are reserved for
+this action as they might conflict with method names.
+
+Options
+-------
+Controlling Output
+~~~~~~~~~~~~~~~~~~
+*-p*, *--pretty*::
+	Pretty-print responses, adding spaces and newlines where appropriate
+	to improve readability.
+
+*--color* _WHEN_::
+	By default, when the output of the program is a terminal, JSON responses
+	are syntax-highlighted.  This corresponds to the _auto_ setting.  You may
+	also set this to _always_ or _never_.  In either case, color is never
+	applied when piping to another program.
+
+*-v*, *--verbose*::
+	Print raw requests and responses, including the JSON-RPC 2.0 envelope.
+
+*-d*, *--debug*::
+	Print even more information to help debug various issues.
+
+Protocol
+~~~~~~~~
+*-a*, *--auto-id*::
+	Choose message IDs automatically, in an increasing sequence.  Normally you
+	need to enter the ID on the command line manually, so as to distinguish
+	notifications from other requests.  Even with this option enabled, you can
+	still specify the ID, if you wish.
+
+*-t*, *--trust-all*::
+	Trust all SSL/TLS certificates.  Useful in case that the certificate is
+	self-signed, or when the CA isn't in your CA store.  Beware that this option
+	is about as good as using plain unencrypted HTTP.
+
+*-o*, *--origin* _ORIGIN_::
+	Set the HTTP Origin header to _ORIGIN_.  Some servers may need this.
+
+Program Information
+~~~~~~~~~~~~~~~~~~~
+*-h*, *--help*::
+	Display a help message and exit.
+
+*-V*, *--version*::
+	Output version information and exit.
+
+*--write-default-cfg*::
+	Write a default configuration file, show its path and exit.
+
+Files
+-----
+_~/.config/json-rpc-shell/json-rpc-shell.conf_::
+	The configuration file, in which you can configure color output and
+	CA certificate paths.  Use the *--write-default-cfg* option to create
+	a new one for editing.
+
+_~/.local/share/json-rpc-shell/history_::
+	All your past method invocations are stored here upon exit and loaded back
+	on start-up.
+
+Notes
+-----
+Editing
+~~~~~~~
+While single-line editing on the command line may be satisfactory for simple
+requests, it is often convenient or even necessary to run a full text editor
+in order to construct complex objects or arrays, and may even be used to import
+data from elsewhere.  You can launch an editor for the current request using
+the M-e key combination.  Both *readline*(3) and *editline*(7) also support
+multiline editing natively, though you need to press C-v C-j in order to insert
+newlines.
+
+WebSockets
+~~~~~~~~~~
+The JSON-RPC 2.0 specification doesn't say almost anything about underlying
+transports. As far as the author is aware, he is the only person combining it
+with WebSockets.  The way it's implemented here is that every request is sent as
+a single text message.  If it has an "id" field, i.e. it's not just
+a notification, the client waits for a message from the server in response.
+Should any message arrive unexpectedly, you will receive a warning.
+
+There is no support so far for any protocol extensions, nor for specifying
+the higher-level protocol (the "Sec-Ws-Protocol" HTTP field).
+
+Bugs
+----
+The editline (libedit) frontend is more of a proof of concept that mostly seems
+to work but exhibits bugs that are not our fault.
+
+Examples
+--------
+Running some queries against json-rpc-test-server, included in the source
+distribution of this program (public services are hard to find):
+
+Pretty-printing and Manual IDs
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+```
+$ json-rpc-shell -p ws://localhost:1234
+json-rpc> date 1
+{
+  "year": 2020,
+  "month": 9,
+  "day": 5,
+  "hours": 2,
+  "minutes": 23,
+  "seconds": 51
+}
+```
+
+Notification With a Parameter
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Notifications never produce a response, not even when the method is not known
+to the server:
+
+```
+$ json-rpc-shell ws://localhost:1234
+json-rpc> notify {"events": ["conquest", "war", "famine", "death"]}
+[Notification]
+```
+
+Piping In and Out
+~~~~~~~~~~~~~~~~~
+GNU Readline always repeats the prompt, which makes this a bit less useful
+for invoking from other programs:
+
+```
+$ echo 'ping | jq ascii_upcase' | json-rpc-shell -a ws://localhost:1234
+json-rpc> ping | jq ascii_upcase
+"PONG"
+```
+
+Reporting Bugs
+--------------
+Use https://git.janouch.name/p/json-rpc-shell to report bugs, request features,
+or submit pull requests.
+
+See Also
+--------
+*jq*(1), *readline*(3) or *editline*(7)
+
+Specifications
+~~~~~~~~~~~~~~
+https://www.jsonrpc.org/specification +
+https://www.json.org
