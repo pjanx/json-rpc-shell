@@ -27,11 +27,13 @@ processor.
 Usage
 ~~~~~
 Three things may appear on the internal command line, in a sequence.  The first
-one must always be the name of the JSON-RPC method to call, as a bare word,
-separated from the rest by white space.  Following that, you may enter two kinds
-of JSON values.  If it is a string, a number, or a null value, it is taken as
-the "id" to use for the request.  If it is an object or an array, it constitutes
-the method parameters.  Booleans may appear in neither.
+one is always the name of the JSON-RPC method to call, as a bare word, separated
+from the rest by white space.  Following that, you may enter three kinds of JSON
+values.  If it is an object or an array, it constitutes the method parameters.
+If it is a string or a number, it is taken as the "id" to use for the request,
+which would be chosen for you automatically if left unspecified.  Finally,
+a null value indicates that the request should be sent as a notification,
+lacking the ID completely.  Booleans cannot be used for anything.
 
 The response to the method call may be piped through external commands, the same
 way you would do it in a Unix shell.
@@ -43,9 +45,9 @@ Options
 -------
 Controlling Output
 ~~~~~~~~~~~~~~~~~~
-*-p*, *--pretty*::
-	Pretty-print responses, adding spaces and newlines where appropriate
-	to improve readability.
+*-c*, *--compact-output*::
+	Do not pretty-print responses.  Normally, spaces and newlines are added
+	where appropriate to improve readability.
 
 *--color* _WHEN_::
 	By default, when the output of the program is a terminal, JSON responses
@@ -61,11 +63,10 @@ Controlling Output
 
 Protocol
 ~~~~~~~~
-*-a*, *--auto-id*::
-	Choose message IDs automatically, in an increasing sequence.  Normally you
-	need to enter the ID on the command line manually, so as to distinguish
-	notifications from other requests.  Even with this option enabled, you can
-	still specify the ID, if you wish.
+*-n*, *--null-as-id*::
+	Normally, entering a null JSON value on the command line causes
+	a notification to be sent.  With this option, it is sent as the "id"
+	field of a normal request, which is discouraged by the specification.
 
 *-t*, *--trust-all*::
 	Trust all SSL/TLS certificates.  Useful in case that the certificate is
@@ -131,10 +132,12 @@ Examples
 Running some queries against json-rpc-test-server, included in the source
 distribution of this program (public services are hard to find):
 
-Pretty-printing and Manual IDs
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
- $ json-rpc-shell -p ws://localhost:1234
- json-rpc> date 1
+Methods Without Parameters
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+ $ json-rpc-shell ws://localhost:1234
+ json-rpc> ping
+ "pong"
+ json-rpc> date
  {
    "year": 2020,
    "month": 9,
@@ -150,7 +153,7 @@ Notifications never produce a response, not even when the method is not known
 to the server:
 
  $ json-rpc-shell ws://localhost:1234
- json-rpc> notify {"events": ["conquest", "war", "famine", "death"]}
+ json-rpc> notify {"events": ["conquest", "war", "famine", "death"]} null
  [Notification]
 
 Piping In and Out
@@ -158,7 +161,7 @@ Piping In and Out
 GNU Readline always repeats the prompt, which makes this a bit less useful
 for invoking from other programs:
 
- $ echo 'ping | jq ascii_upcase' | json-rpc-shell -a ws://localhost:1234
+ $ echo 'ping | jq ascii_upcase' | json-rpc-shell ws://localhost:1234
  json-rpc> ping | jq ascii_upcase
  "PONG"
 
