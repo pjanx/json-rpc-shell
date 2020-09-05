@@ -1,8 +1,8 @@
 json-rpc-shell(1)
 =================
 :doctype: manpage
-:man manual: json-rpc-shell Manual
-:man source: json-rpc-shell {release-version}
+:manmanual: json-rpc-shell Manual
+:mansource: json-rpc-shell {release-version}
 
 Name
 ----
@@ -15,7 +15,7 @@ Synopsis
 Description
 -----------
 The _ENDPOINT_ must be either an HTTP or a WebSocket URL, with or without TLS
-(i.e. one of the _http://_, _https://_, _ws://_, _wss://_ schemas).
+(i.e. one of the _+++http+++://_, _+++https+++://_, _ws://_, _wss://_ schemas).
 
 *json-rpc-shell* will use it to send any JSON-RPC 2.0 requests you enter on its
 command line. The server's response will be parsed and validated, stripping it
@@ -133,40 +133,34 @@ distribution of this program (public services are hard to find):
 
 Pretty-printing and Manual IDs
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-```
-$ json-rpc-shell -p ws://localhost:1234
-json-rpc> date 1
-{
-  "year": 2020,
-  "month": 9,
-  "day": 5,
-  "hours": 2,
-  "minutes": 23,
-  "seconds": 51
-}
-```
+ $ json-rpc-shell -p ws://localhost:1234
+ json-rpc> date 1
+ {
+   "year": 2020,
+   "month": 9,
+   "day": 5,
+   "hours": 2,
+   "minutes": 23,
+   "seconds": 51
+ }
 
 Notification With a Parameter
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Notifications never produce a response, not even when the method is not known
 to the server:
 
-```
-$ json-rpc-shell ws://localhost:1234
-json-rpc> notify {"events": ["conquest", "war", "famine", "death"]}
-[Notification]
-```
+ $ json-rpc-shell ws://localhost:1234
+ json-rpc> notify {"events": ["conquest", "war", "famine", "death"]}
+ [Notification]
 
 Piping In and Out
 ~~~~~~~~~~~~~~~~~
 GNU Readline always repeats the prompt, which makes this a bit less useful
 for invoking from other programs:
 
-```
-$ echo 'ping | jq ascii_upcase' | json-rpc-shell -a ws://localhost:1234
-json-rpc> ping | jq ascii_upcase
-"PONG"
-```
+ $ echo 'ping | jq ascii_upcase' | json-rpc-shell -a ws://localhost:1234
+ json-rpc> ping | jq ascii_upcase
+ "PONG"
 
 Reporting Bugs
 --------------
