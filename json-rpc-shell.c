@@ -1683,7 +1683,7 @@ backend_ws_establish_connection (struct ws_context *self,
 		else
 			real_host = buf;
 
-		if (self->ctx->verbose)
+		if (g_debug_mode)
 		{
 			char *address = format_host_port_pair (real_host, port);
 			print_status ("connecting to %s...", address);
