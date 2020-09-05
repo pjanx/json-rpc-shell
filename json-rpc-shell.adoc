@@ -43,13 +43,13 @@ this action as they might conflict with method names.
 
 Options
 -------
-Controlling Output
+Controlling output
 ~~~~~~~~~~~~~~~~~~
 *-c*, *--compact-output*::
 	Do not pretty-print responses.  Normally, spaces and newlines are added
 	where appropriate to improve readability.
 
-*--color* _WHEN_::
+*--color*=_WHEN_::
 	By default, when the output of the program is a terminal, JSON responses
 	are syntax-highlighted.  This corresponds to the _auto_ setting.  You may
 	also set this to _always_ or _never_.  In either case, color is never
@@ -73,10 +73,10 @@ Protocol
 	self-signed, or when the CA isn't in your CA store.  Beware that this option
 	is about as good as using plain unencrypted HTTP.
 
-*-o*, *--origin* _ORIGIN_::
+*-o* _ORIGIN_, *--origin*=_ORIGIN_::
 	Set the HTTP Origin header to _ORIGIN_.  Some servers may need this.
 
-Program Information
+Program information
 ~~~~~~~~~~~~~~~~~~~
 *-h*, *--help*::
 	Display a help message and exit.
@@ -84,7 +84,7 @@ Program Information
 *-V*, *--version*::
 	Output version information and exit.
 
-*--write-default-cfg*::
+*--write-default-cfg*[**=**__PATH__]::
 	Write a default configuration file, show its path and exit.
 
 Files
@@ -115,7 +115,7 @@ WebSockets
 The JSON-RPC 2.0 specification doesn't say almost anything about underlying
 transports. As far as the author is aware, he is the only person combining it
 with WebSockets.  The way it's implemented here is that every request is sent as
-a single text message.  If it has an "id" field, i.e. it's not just
+a single text message.  If it has an "id" field, i.e., it's not just
 a notification, the client waits for a message from the server in response.
 Should any message arrive unexpectedly, you will receive a warning.
 
@@ -132,7 +132,7 @@ Examples
 Running some queries against json-rpc-test-server, included in the source
 distribution of this program (public services are hard to find):
 
-Methods Without Parameters
+Methods without parameters
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
  $ json-rpc-shell ws://localhost:1234
  json-rpc> ping
@@ -147,7 +147,7 @@ Methods Without Parameters
    "seconds": 51
  }
 
-Notification With a Parameter
+Notification with a parameter
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Notifications never produce a response, not even when the method is not known
 to the server:
@@ -156,7 +156,7 @@ to the server:
  json-rpc> notify {"events": ["conquest", "war", "famine", "death"]} null
  [Notification]
 
-Piping In and Out
+Piping in and out
 ~~~~~~~~~~~~~~~~~
 GNU Readline always repeats the prompt, which makes this a bit less useful
 for invoking from other programs:
@@ -165,12 +165,12 @@ for invoking from other programs:
  json-rpc> ping | jq ascii_upcase
  "PONG"
 
-Reporting Bugs
+Reporting bugs
 --------------
 Use https://git.janouch.name/p/json-rpc-shell to report bugs, request features,
 or submit pull requests.
 
-See Also
+See also
 --------
 *jq*(1), *readline*(3) or *editline*(7)
 
