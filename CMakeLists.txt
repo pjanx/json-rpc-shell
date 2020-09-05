@@ -13,8 +13,8 @@ if ("${CMAKE_C_COMPILER_ID}" MATCHES "GNU" OR CMAKE_COMPILER_IS_GNUCC)
 endif ("${CMAKE_C_COMPILER_ID}" MATCHES "GNU" OR CMAKE_COMPILER_IS_GNUCC)
 
 # Version
-set (project_VERSION_MAJOR "0")
-set (project_VERSION_MINOR "1")
+set (project_VERSION_MAJOR "1")
+set (project_VERSION_MINOR "0")
 set (project_VERSION_PATCH "0")
 
 set (project_VERSION "${project_VERSION_MAJOR}")
