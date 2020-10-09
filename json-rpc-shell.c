@@ -360,17 +360,15 @@ input_rl_set_prompt (struct input *input, char *prompt)
 	free (self->prompt);
 	self->prompt = prompt;
 
-	if (!self->active)
+	if (!self->active || self->prompt_shown <= 0)
 		return;
 
 	// First reset the prompt to work around a bug in readline
 	rl_set_prompt ("");
-	if (self->prompt_shown > 0)
-		rl_redisplay ();
+	rl_redisplay ();
 
 	rl_set_prompt (self->prompt);
-	if (self->prompt_shown > 0)
-		rl_redisplay ();
+	rl_redisplay ();
 }
 
 static bool
