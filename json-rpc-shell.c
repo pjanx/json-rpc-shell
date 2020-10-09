@@ -268,6 +268,7 @@ input_rl_start (struct input *input, const char *program_name)
 	rl_readline_name = slash ? ++slash : program_name;
 	rl_startup_hook = input_rl_on_startup;
 	rl_catch_sigwinch = false;
+	rl_change_environment = false;
 
 	hard_assert (self->prompt != NULL);
 	rl_callback_handler_install (self->prompt, input_rl_on_input);
@@ -2714,6 +2715,7 @@ static void
 resume_terminal (struct app_context *ctx)
 {
 	ctx->input->vtable->prepare (ctx->input, true);
+	ctx->input->vtable->on_terminal_resized (ctx->input);
 	ev_io_start (EV_DEFAULT_ &ctx->tty_watcher);
 	ctx->input->vtable->show (ctx->input);
 }
