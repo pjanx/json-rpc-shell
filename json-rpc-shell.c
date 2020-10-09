@@ -2900,9 +2900,9 @@ maybe_print_verbose (struct app_context *ctx, intptr_t attribute,
 	}
 }
 
-static void
-make_json_rpc_call (struct app_context *ctx,
-	const char *method, json_t *id, json_t *params, const char *pipeline)
+static struct error *
+json_rpc_call_raw (struct app_context *ctx,
+	const char *method, json_t *id, json_t *params, struct str *buf)
 {
 	json_t *request = json_object ();
 	json_object_set_new (request, "jsonrpc", json_string ("2.0"));
@@ -2912,20 +2912,34 @@ make_json_rpc_call (struct app_context *ctx,
 	if (params)  json_object_set (request, "params", params);
 
 	char *req_utf8 = json_dumps (request, 0);
+	json_decref (request);
+
 	maybe_print_verbose (ctx, ATTR_OUTGOING, req_utf8, -1);
 
+	struct error *error = NULL;
+	ctx->backend->vtable->make_call (ctx->backend, req_utf8,
+		id != NULL /* expect_content */, buf, &error);
+	free (req_utf8);
+
+	if (error)
+		return error;
+
+	maybe_print_verbose (ctx, ATTR_INCOMING, buf->str, buf->len);
+	return NULL;
+}
+
+static void
+make_json_rpc_call (struct app_context *ctx,
+	const char *method, json_t *id, json_t *params, const char *pipeline)
+{
 	struct str buf = str_make ();
-	struct error *e = NULL;
-	if (!ctx->backend->vtable->make_call
-		(ctx->backend, req_utf8, id != NULL, &buf, &e))
+	struct error *e = json_rpc_call_raw (ctx, method, id, params, &buf);
+	if (e)
 	{
 		print_error ("%s", e->message);
 		error_free (e);
-		goto fail;
 	}
-
-	maybe_print_verbose (ctx, ATTR_INCOMING, buf.str, buf.len);
-	if (!process_response (ctx, id, &buf, pipeline))
+	else if (!process_response (ctx, id, &buf, pipeline))
 	{
 		char *s = iconv_xstrdup (ctx->term_from_utf8,
 			buf.str, buf.len + 1 /* null byte */, NULL);
@@ -2936,10 +2950,7 @@ make_json_rpc_call (struct app_context *ctx,
 			printf ("%s: %s\n", "raw response data", s);
 		free (s);
 	}
-fail:
 	str_free (&buf);
-	free (req_utf8);
-	json_decref (request);
 }
 
 static bool
