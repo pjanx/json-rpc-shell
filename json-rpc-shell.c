@@ -247,10 +247,22 @@ input_rl_on_run_editor (int count, int key)
 }
 
 static int
+input_rl_newline_insert (int count, int key)
+{
+	(void) count;
+	(void) key;
+
+	rl_insert_text ("\n");
+	return 0;
+}
+
+static int
 input_rl_on_startup (void)
 {
 	rl_add_defun ("run-editor", input_rl_on_run_editor, -1);
 	rl_bind_keyseq ("\\ee", rl_named_function ("run-editor"));
+	rl_add_defun ("newline-insert", input_rl_newline_insert, -1);
+	rl_bind_keyseq ("\\e\\r", rl_named_function ("newline-insert"));
 	return 0;
 }
 
