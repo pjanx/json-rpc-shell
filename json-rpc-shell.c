@@ -2882,17 +2882,22 @@ fail:
 	return success;
 }
 
-static bool
-is_valid_json_rpc_id (json_t *v)
+static void
+maybe_print_verbose (struct app_context *ctx, intptr_t attribute,
+	char *utf8, size_t len)
 {
-	return json_is_string (v) || json_is_integer (v)
-		|| json_is_real (v) || json_is_null (v);  // These two shouldn't be used
-}
+	if (!ctx->verbose)
+		return;
 
-static bool
-is_valid_json_rpc_params (json_t *v)
-{
-	return json_is_array (v) || json_is_object (v);
+	char *term = iconv_xstrdup (ctx->term_from_utf8, utf8, len, NULL);
+	if (!term)
+		print_error ("%s: %s", "verbose", "character conversion failed");
+	else
+	{
+		print_attributed (ctx, stdout, attribute, "%s", term);
+		fputs ("\n", stdout);
+		free (term);
+	}
 }
 
 static void
@@ -2907,19 +2912,7 @@ make_json_rpc_call (struct app_context *ctx,
 	if (params)  json_object_set (request, "params", params);
 
 	char *req_utf8 = json_dumps (request, 0);
-	if (ctx->verbose)
-	{
-		char *req_term = iconv_xstrdup
-			(ctx->term_from_utf8, req_utf8, -1, NULL);
-		if (!req_term)
-			print_error ("%s: %s", "verbose", "character conversion failed");
-		else
-		{
-			print_attributed (ctx, stdout, ATTR_OUTGOING, "%s", req_term);
-			fputs ("\n", stdout);
-		}
-		free (req_term);
-	}
+	maybe_print_verbose (ctx, ATTR_OUTGOING, req_utf8, -1);
 
 	struct str buf = str_make ();
 	struct error *e = NULL;
@@ -2931,20 +2924,7 @@ make_json_rpc_call (struct app_context *ctx,
 		goto fail;
 	}
 
-	if (ctx->verbose)
-	{
-		char *buf_term =
-			iconv_xstrdup (ctx->term_from_utf8, buf.str, buf.len, NULL);
-		if (!buf_term)
-			print_error ("%s: %s", "verbose", "character conversion failed");
-		else
-		{
-			print_attributed (ctx, stdout, ATTR_INCOMING, "%s", buf_term);
-			fputs ("\n", stdout);
-		}
-		free (buf_term);
-	}
-
+	maybe_print_verbose (ctx, ATTR_INCOMING, buf.str, buf.len);
 	if (!process_response (ctx, id, &buf, pipeline))
 	{
 		char *s = iconv_xstrdup (ctx->term_from_utf8,
@@ -2960,6 +2940,19 @@ fail:
 	str_free (&buf);
 	free (req_utf8);
 	json_decref (request);
+}
+
+static bool
+is_valid_json_rpc_id (json_t *v)
+{
+	return json_is_string (v) || json_is_integer (v)
+		|| json_is_real (v) || json_is_null (v);  // These two shouldn't be used
+}
+
+static bool
+is_valid_json_rpc_params (json_t *v)
+{
+	return json_is_array (v) || json_is_object (v);
 }
 
 static void
