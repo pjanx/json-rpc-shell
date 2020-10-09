@@ -3361,19 +3361,19 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv,
 {
 	static const struct opt opts[] =
 	{
-		{ 'd', "debug", NULL, 0, "run in debug mode" },
-		{ 'h', "help", NULL, 0, "display this help message and exit" },
-		{ 'V', "version", NULL, 0, "output version information and exit" },
-		{ 'n', "null-as-id", NULL, 0, "JSON null is used as an `id'" },
-		{ 'o', "origin", "O", 0, "set the HTTP Origin header" },
 		{ 'c', "compact-output", NULL, 0, "do not pretty-print responses" },
-		{ 't', "trust-all", NULL, 0, "don't care about SSL/TLS certificates" },
-		{ 'v', "verbose", NULL, 0, "print raw requests and responses" },
 		{ 'C', "color", "WHEN", OPT_LONG_ONLY,
 		  "colorize output: never, always, or auto" },
+		{ 'n', "null-as-id", NULL, 0, "JSON null is used as an `id'" },
+		{ 'o', "origin", "O", 0, "set the HTTP Origin header" },
+		{ 't', "trust-all", NULL, 0, "don't care about SSL/TLS certificates" },
+		{ 'v', "verbose", NULL, 0, "print raw requests and responses" },
 		{ 'w', "write-default-cfg", "FILENAME",
 		  OPT_OPTIONAL_ARG | OPT_LONG_ONLY,
 		  "write a default configuration file and exit" },
+		{ 'd', "debug", NULL, 0, "run in debug mode" },
+		{ 'h', "help", NULL, 0, "display this help message and exit" },
+		{ 'V', "version", NULL, 0, "output version information and exit" },
 		{ 0, NULL, NULL, 0, NULL }
 	};
 
