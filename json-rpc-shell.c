@@ -364,8 +364,7 @@ input_rl_show (struct input *input)
 	rl_replace_line (self->saved_line, false);
 	rl_point = self->saved_point;
 	rl_mark = self->saved_mark;
-	free (self->saved_line);
-	self->saved_line = NULL;
+	cstr_set (&self->saved_line, NULL);
 
 	rl_redisplay ();
 }
@@ -374,8 +373,7 @@ static void
 input_rl_set_prompt (struct input *input, char *prompt)
 {
 	struct input_rl *self = (struct input_rl *) input;
-	free (self->prompt);
-	self->prompt = prompt;
+	cstr_set (&self->prompt, prompt);
 
 	if (!self->active || self->prompt_shown <= 0)
 		return;
@@ -762,8 +760,7 @@ static void
 input_el_set_prompt (struct input *input, char *prompt)
 {
 	struct input_el *self = (struct input_el *) input;
-	free (self->prompt);
-	self->prompt = prompt;
+	cstr_set (&self->prompt, prompt);
 
 	if (self->prompt_shown > 0)
 		input_el_redisplay (self);
@@ -869,8 +866,7 @@ input_el_on_tty_readable (struct input *input)
 		self->prompt_shown = 0;
 
 		self->super.on_input (self->entered_line, self->super.user_data);
-		free (self->entered_line);
-		self->entered_line = NULL;
+		cstr_set (&self->entered_line, NULL);
 
 		// Forbid editline from trying to erase the old prompt (or worse)
 		// and let it redisplay the prompt in its clean state
@@ -1256,10 +1252,9 @@ on_config_attribute_change (struct config_item *item)
 	ssize_t id = attr_by_name (item->schema->name);
 	if (id != -1)
 	{
-		free (ctx->attrs[id]);
-		ctx->attrs[id] = xstrdup (item->type == CONFIG_ITEM_NULL
+		cstr_set (&ctx->attrs[id], xstrdup (item->type == CONFIG_ITEM_NULL
 			? ctx->attrs_defaults[id]
-			: item->value.string.str);
+			: item->value.string.str));
 	}
 }
 
@@ -3182,51 +3177,6 @@ app_readline_completion (const char *text, int start, int end)
 // The ability to use an external editor on the input line has been shamelessly
 // copypasted from degesch with minor changes only.
 
-/// This differs from the non-unique version in that we expect the filename
-/// to be something like a pattern for mkstemp(), so the resulting path can
-/// reside in a system-wide directory with no risk of a conflict.
-static char *
-resolve_relative_runtime_unique_filename (const char *filename)
-{
-	struct str path = str_make ();
-
-	const char *runtime_dir = getenv ("XDG_RUNTIME_DIR");
-	const char *tmpdir = getenv ("TMPDIR");
-	if (runtime_dir && *runtime_dir == '/')
-		str_append (&path, runtime_dir);
-	else if (tmpdir && *tmpdir == '/')
-		str_append (&path, tmpdir);
-	else
-		str_append (&path, "/tmp");
-	str_append_printf (&path, "/%s/%s", PROGRAM_NAME, filename);
-
-	// Try to create the file's ancestors;
-	// typically the user will want to immediately create a file in there
-	const char *last_slash = strrchr (path.str, '/');
-	if (last_slash && last_slash != path.str)
-	{
-		char *copy = xstrndup (path.str, last_slash - path.str);
-		(void) mkdir_with_parents (copy, NULL);
-		free (copy);
-	}
-	return str_steal (&path);
-}
-
-static bool
-xwrite (int fd, const char *data, size_t len, struct error **e)
-{
-	size_t written = 0;
-	while (written < len)
-	{
-		ssize_t res = write (fd, data + written, len - written);
-		if (res >= 0)
-			written += res;
-		else if (errno != EINTR)
-			FAIL ("%s", strerror (errno));
-	}
-	return true;
-}
-
 static bool
 dump_line_to_file (const char *line, char *template, struct error **e)
 {
@@ -3246,7 +3196,7 @@ static char *
 try_dump_line_to_file (const char *line)
 {
 	char *template = resolve_filename
-		("input.XXXXXX", resolve_relative_runtime_unique_filename);
+		("input.XXXXXX", resolve_relative_runtime_template);
 
 	struct error *e = NULL;
 	if (dump_line_to_file (line, template, &e))
@@ -3371,8 +3321,7 @@ on_child (EV_P_ ev_child *handle, int revents)
 	else
 		process_edited_input (ctx);
 
-	free (ctx->editor_filename);
-	ctx->editor_filename = NULL;
+	cstr_set (&ctx->editor_filename, NULL);
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
