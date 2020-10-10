@@ -2924,7 +2924,7 @@ json_rpc_call_raw (struct app_context *ctx,
 	if (error)
 		return error;
 
-	maybe_print_verbose (ctx, ATTR_INCOMING, buf->str, buf->len);
+	maybe_print_verbose (ctx, ATTR_INCOMING, buf->str, buf->len + 1);
 	return NULL;
 }
 
