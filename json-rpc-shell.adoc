@@ -113,8 +113,7 @@ newlines.
 WebSockets
 ~~~~~~~~~~
 The JSON-RPC 2.0 specification doesn't say almost anything about underlying
-transports. As far as the author is aware, he is the only person combining it
-with WebSockets.  The way it's implemented here is that every request is sent as
+transports.  The way it's implemented here is that every request is sent as
 a single text message.  If it has an "id" field, i.e., it's not just
 a notification, the client waits for a message from the server in response.
 Should any message arrive unexpectedly, you will receive a warning.
