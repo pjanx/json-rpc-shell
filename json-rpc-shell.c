@@ -3225,24 +3225,16 @@ fail:
 // --- OpenRPC information extraction ------------------------------------------
 
 static void
-init_openrpc (struct app_context *ctx)
+parse_rpc_discover (struct app_context *ctx, struct str *buf, struct error **e)
 {
-	if (!ctx->openrpc)
-		return;
-
-	json_t *id = json_integer (ctx->next_id++);
-	struct str buf = str_make ();
-	struct error *e = json_rpc_call_raw (ctx, "rpc.discover", id, NULL, &buf);
-	json_decref (id);
-
 	// Just optimistically punch through, I don't have time for this shit
 	json_error_t error;
 	json_t *response = NULL, *result = NULL, *value = NULL;
-	if (!e && !(response = json_loadb (buf.str, buf.len, 0, &error)))
-		error_set (&e, "parse failure: %s", error.text);
+	if (!(response = json_loadb (buf->str, buf->len, 0, &error)))
+		error_set (e, "parse failure: %s", error.text);
 	else if (!(result = json_object_get (response, "result"))
 		|| !(result = json_object_get (result, "methods")))
-		error_set (&e, "unsupported");
+		error_set (e, "unsupported");
 	else
 	{
 		const char *name = NULL;
@@ -3252,10 +3244,25 @@ init_openrpc (struct app_context *ctx)
 				str_map_set (&ctx->methods, name, (void *) 1);
 	}
 	json_decref (response);
-	if (e)
+}
+
+static void
+init_openrpc (struct app_context *ctx)
+{
+	if (!ctx->openrpc)
+		return;
+
+	json_t *id = json_integer (ctx->next_id++);
+	struct str buf = str_make ();
+	struct error *error;
+	if (!(error = json_rpc_call_raw (ctx, "rpc.discover", id, NULL, &buf)))
+		parse_rpc_discover (ctx, &buf, &error);
+	json_decref (id);
+
+	if (error)
 	{
-		print_error ("OpenRPC: %s", e->message);
-		error_free (e);
+		print_error ("OpenRPC: %s", error->message);
+		error_free (error);
 	}
 	str_free (&buf);
 }
