@@ -19,6 +19,7 @@ the following niceties:
    results in your favourite editor or redirect them to a file
  - ability to edit the input line in your favourite editor as well with Alt+E
  - WebSocket (RFC 6455) can also be used as a transport rather than HTTP
+ - even Language Server Protocol servers may be launched as a slave command
  - support for method name tab completion using OpenRPC discovery or file input
 
 Documentation

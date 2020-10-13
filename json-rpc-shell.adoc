@@ -10,7 +10,7 @@ json-rpc-shell - a shell for JSON-RPC 2.0
 
 Synopsis
 --------
-*json-rpc-shell* [_OPTION_]... _ENDPOINT_
+*json-rpc-shell* [_OPTION_]... { _ENDPOINT_ | _COMMAND_ [_ARG_]... }
 
 Description
 -----------
@@ -79,6 +79,11 @@ Protocol
 *-O*[__PATH__], *--openrpc*[**=**__PATH__]::
 	Call "rpc.discover" upon start-up in order to pull in OpenRPC data for
 	tab completion of method names.  If a path is given, it is read from a file.
+
+*-e*, *--execute*::
+	Rather than an _ENDPOINT_, accept a command line to execute and communicate
+	with using the JSON-RPC 2.0 protocol variation used in the Language Server
+	Protocol.
 
 Program information
 ~~~~~~~~~~~~~~~~~~~
