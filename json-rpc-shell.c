@@ -3536,7 +3536,7 @@ init_watchers (struct app_context *ctx)
 
 static void
 parse_program_arguments (struct app_context *ctx, int argc, char **argv,
-	char **origin, char **endpoint)
+	const char **origin, const char **endpoint)
 {
 	static const struct opt opts[] =
 	{
@@ -3618,6 +3618,38 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv,
 	opt_handler_free (&oh);
 }
 
+static void
+init_backend (struct app_context *ctx, const char *origin, const char *endpoint)
+{
+	struct http_parser_url url;
+	if (http_parser_parse_url (endpoint, strlen (endpoint), false, &url))
+		exit_fatal ("invalid endpoint address");
+	if (!(url.field_set & (1 << UF_SCHEMA)))
+		exit_fatal ("invalid endpoint address, must contain the schema");
+
+	char *url_schema = xstrndup (endpoint +
+		url.field_data[UF_SCHEMA].off,
+		url.field_data[UF_SCHEMA].len);
+
+	// TODO: try to avoid the need to pass the application context to backends
+	if (!strcasecmp_ascii (url_schema, "http")
+		|| !strcasecmp_ascii (url_schema, "https"))
+		ctx->backend = backend_curl_new (ctx, endpoint);
+	else if (!strcasecmp_ascii (url_schema, "ws")
+		|| !strcasecmp_ascii (url_schema, "wss"))
+		ctx->backend = backend_ws_new (ctx, endpoint, &url);
+	else
+		exit_fatal ("unsupported protocol");
+	free (url_schema);
+
+	if (origin)
+	{
+		char *header = xstrdup_printf ("Origin: %s", origin);
+		g_ctx.backend->vtable->add_header (g_ctx.backend, header);
+		free (header);
+	}
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -3625,8 +3657,7 @@ main (int argc, char *argv[])
 	register_config_modules (&g_ctx);
 	config_load (&g_ctx.config, config_item_object ());
 
-	char *origin = NULL;
-	char *endpoint = NULL;
+	const char *origin = NULL, *endpoint = NULL;
 	parse_program_arguments (&g_ctx, argc, argv, &origin, &endpoint);
 
 	g_ctx.input = input_new ();
@@ -3638,34 +3669,7 @@ main (int argc, char *argv[])
 	g_ctx.methods = str_map_make (NULL);
 	init_colors (&g_ctx);
 	load_configuration (&g_ctx);
-
-	struct http_parser_url url;
-	if (http_parser_parse_url (endpoint, strlen (endpoint), false, &url))
-		exit_fatal ("invalid endpoint address");
-	if (!(url.field_set & (1 << UF_SCHEMA)))
-		exit_fatal ("invalid endpoint address, must contain the schema");
-
-	char *url_schema = xstrndup (endpoint +
-		url.field_data[UF_SCHEMA].off,
-		url.field_data[UF_SCHEMA].len);
-
-	// TODO: try to avoid the need to pass application context to backends
-	if (!strcasecmp_ascii (url_schema, "http")
-		|| !strcasecmp_ascii (url_schema, "https"))
-		g_ctx.backend = backend_curl_new (&g_ctx, endpoint);
-	else if (!strcasecmp_ascii (url_schema, "ws")
-		|| !strcasecmp_ascii (url_schema, "wss"))
-		g_ctx.backend = backend_ws_new (&g_ctx, endpoint, &url);
-	else
-		exit_fatal ("unsupported protocol");
-	free (url_schema);
-
-	if (origin)
-	{
-		origin = xstrdup_printf ("Origin: %s", origin);
-		g_ctx.backend->vtable->add_header (g_ctx.backend, origin);
-	}
-	free (origin);
+	init_backend (&g_ctx, origin, endpoint);
 
 	// We only need to convert to and from the terminal encoding
 	setlocale (LC_CTYPE, "");
