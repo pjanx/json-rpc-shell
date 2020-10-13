@@ -1014,7 +1014,7 @@ static int
 ws_handler_on_url (http_parser *parser, const char *at, size_t len)
 {
 	struct ws_handler *self = parser->data;
-	str_append_data (&self->value, at, len);
+	str_append_data (&self->url, at, len);
 	return 0;
 }
 
