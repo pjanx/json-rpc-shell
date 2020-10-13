@@ -329,6 +329,7 @@ fcgi_muxer_on_get_values
 	nv_parser.output = &values;
 
 	fcgi_nv_parser_push (&nv_parser, parser->content.str, parser->content.len);
+	fcgi_nv_parser_free (&nv_parser);
 	const char *key = NULL;
 
 	// No real-world servers seem to actually use multiplexing
