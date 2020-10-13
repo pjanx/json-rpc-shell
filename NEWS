@@ -1,3 +1,14 @@
+1.1.0 (2020-10-13)
+
+ * Add method name tab completion using OpenRPC information
+
+ * Bind M-Enter to insert a newline into the command line
+
+ * json-rpc-test-server: fix a memory leak and request URI parsing
+
+ * Miscellaneous bug fixes
+
+
 1.0.0 (2020-09-05)
 
  * Initial release
