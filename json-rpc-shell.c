@@ -689,6 +689,10 @@ input_el_start (struct input *input, const char *program_name)
 	el_set (self->editline, EL_BIND, "M-e", "run-editor",         NULL);
 
 	el_set (self->editline, EL_ADDFN,
+		"complete", "Complete word", input_el_on_complete);
+	el_set (self->editline, EL_BIND, "\t", "complete",            NULL);
+
+	el_set (self->editline, EL_ADDFN,
 		"newline-insert", "Insert a newline", input_el_on_newline_insert);
 	el_set (self->editline, EL_BIND, "M-\n", "newline-insert",    NULL);
 
