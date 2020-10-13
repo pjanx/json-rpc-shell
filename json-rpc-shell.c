@@ -643,6 +643,15 @@ input_el_on_run_editor (EditLine *editline, int key)
 	return CC_NORM;
 }
 
+static unsigned char
+input_el_on_newline_insert (EditLine *editline, int key)
+{
+	(void) key;
+
+	el_insertstr (editline, "\n");
+	return CC_REFRESH;
+}
+
 static void
 input_el_install_prompt (struct input_el *self)
 {
@@ -671,19 +680,17 @@ input_el_start (struct input *input, const char *program_name)
 	// Just what are you doing?
 	el_set (self->editline, EL_BIND, "^u", "vi-kill-line-prev",   NULL);
 
-	// It's probably better to handle this ourselves
+	// It's probably better to handle these ourselves
 	el_set (self->editline, EL_ADDFN,
 		"send-line", "Send line", input_el_on_return);
 	el_set (self->editline, EL_BIND, "\n", "send-line",           NULL);
-
-	// It's probably better to handle this ourselves
 	el_set (self->editline, EL_ADDFN,
 		"run-editor", "Run editor to edit line", input_el_on_run_editor);
 	el_set (self->editline, EL_BIND, "M-e", "run-editor",         NULL);
 
 	el_set (self->editline, EL_ADDFN,
-		"complete", "Complete word", input_el_on_complete);
-	el_set (self->editline, EL_BIND, "\t", "complete",            NULL);
+		"newline-insert", "Insert a newline", input_el_on_newline_insert);
+	el_set (self->editline, EL_BIND, "M-\n", "newline-insert",    NULL);
 
 	// Source the user's defaults file
 	el_source (self->editline, NULL);
