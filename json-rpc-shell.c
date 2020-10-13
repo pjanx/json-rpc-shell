@@ -664,6 +664,14 @@ input_el_install_prompt (struct input_el *self)
 static unsigned char input_el_on_complete (EditLine *editline, int key);
 
 static void
+input_el_addbind (EditLine *editline, const char *name, const char *desc,
+	unsigned char (*function) (EditLine *, int), const char *binding)
+{
+	el_set (editline, EL_ADDFN, name, desc, function);
+	el_set (editline, EL_BIND, binding, name, NULL);
+}
+
+static void
 input_el_start (struct input *input, const char *program_name)
 {
 	struct input_el *self = (struct input_el *) input;
@@ -681,20 +689,15 @@ input_el_start (struct input *input, const char *program_name)
 	el_set (self->editline, EL_BIND, "^u", "vi-kill-line-prev",   NULL);
 
 	// It's probably better to handle these ourselves
-	el_set (self->editline, EL_ADDFN,
-		"send-line", "Send line", input_el_on_return);
-	el_set (self->editline, EL_BIND, "\n", "send-line",           NULL);
-	el_set (self->editline, EL_ADDFN,
-		"run-editor", "Run editor to edit line", input_el_on_run_editor);
-	el_set (self->editline, EL_BIND, "M-e", "run-editor",         NULL);
+	input_el_addbind (self->editline, "send-line", "Send line",
+		input_el_on_return, "\n");
+	input_el_addbind (self->editline, "run-editor", "Run editor to edit line",
+		input_el_on_run_editor, "M-e");
 
-	el_set (self->editline, EL_ADDFN,
-		"complete", "Complete word", input_el_on_complete);
-	el_set (self->editline, EL_BIND, "\t", "complete",            NULL);
-
-	el_set (self->editline, EL_ADDFN,
-		"newline-insert", "Insert a newline", input_el_on_newline_insert);
-	el_set (self->editline, EL_BIND, "M-\n", "newline-insert",    NULL);
+	input_el_addbind (self->editline, "complete", "Complete word",
+		input_el_on_complete, "\t");
+	input_el_addbind (self->editline, "newline-insert", "Insert a newline",
+		input_el_on_newline_insert, "M-\n");
 
 	// Source the user's defaults file
 	el_source (self->editline, NULL);
