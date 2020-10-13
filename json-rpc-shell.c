@@ -1108,7 +1108,7 @@ g_ctx;
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 // HTTP/S and WS/S require significantly different handling.  While for HTTP we
-// can just use the cURL easy interface, with WebSockets it gets a bit more
+// can just use the cURL easy interface, with WebSocket it gets a bit more
 // complicated and we implement it all by ourselves.
 //
 // Luckily on a higher level the application doesn't need to bother itself with
@@ -1404,12 +1404,12 @@ on_config_attribute_change (struct config_item *item)
 	}
 }
 
-// --- WebSockets backend ------------------------------------------------------
+// --- WebSocket backend -------------------------------------------------------
 
 enum ws_handler_state
 {
 	WS_HANDLER_CONNECTING,              ///< Parsing HTTP
-	WS_HANDLER_OPEN,                    ///< Parsing WebSockets frames
+	WS_HANDLER_OPEN,                    ///< Parsing WebSocket frames
 	WS_HANDLER_CLOSING,                 ///< Closing the connection
 	WS_HANDLER_CLOSED                   ///< Dead
 };
@@ -1442,7 +1442,7 @@ struct ws_context
 	SSL_CTX *ssl_ctx;                   ///< SSL context
 	SSL *ssl;                           ///< SSL connection
 
-	// WebSockets protocol handling:
+	// WebSocket protocol handling:
 
 	enum ws_handler_state state;        ///< State
 	char *key;                          ///< Key for the current handshake

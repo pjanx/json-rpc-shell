@@ -525,11 +525,11 @@ fcgi_muxer_push (struct fcgi_muxer *self, const void *data, size_t len)
 }
 
 /// @}
-// --- WebSockets --------------------------------------------------------------
-/// @defgroup WebSockets
+// --- WebSocket ---------------------------------------------------------------
+/// @defgroup WebSocket
 /// @{
 
-// WebSockets aren't CGI-compatible, therefore we must handle the initial HTTP
+// WebSocket isn't CGI-compatible, therefore we must handle the initial HTTP
 // handshake ourselves.  Luckily it's not too much of a bother with http-parser.
 // Typically there will be a normal HTTP server in front of us, proxying the
 // requests based on the URI.
@@ -537,7 +537,7 @@ fcgi_muxer_push (struct fcgi_muxer *self, const void *data, size_t len)
 enum ws_handler_state
 {
 	WS_HANDLER_CONNECTING,              ///< Parsing HTTP
-	WS_HANDLER_OPEN,                    ///< Parsing WebSockets frames
+	WS_HANDLER_OPEN,                    ///< Parsing WebSocket frames
 	WS_HANDLER_CLOSING,                 ///< Partial closure by us
 	WS_HANDLER_FLUSHING,                ///< Just waiting for client EOF
 	WS_HANDLER_CLOSED                   ///< Dead, both sides closed
@@ -1110,7 +1110,7 @@ ws_handler_finish_handshake (struct ws_handler *self)
 	if (!connection || strcasecmp_ascii (connection, "Upgrade"))
 		FAIL_HANDSHAKE (HTTP_400_BAD_REQUEST);
 
-	// Check if we can actually upgrade the protocol to WebSockets
+	// Check if we can actually upgrade the protocol to WebSocket
 	const char *upgrade = str_map_find (&self->headers, "Upgrade");
 	struct http_protocol *offered_upgrades = NULL;
 	bool can_upgrade = false;
@@ -1286,7 +1286,7 @@ static struct simple_config_item g_config_table[] =
 	{ "bind_host",       NULL,              "Address of the server"          },
 	{ "port_fastcgi",    "9000",            "Port to bind for FastCGI"       },
 	{ "port_scgi",       NULL,              "Port to bind for SCGI"          },
-	{ "port_ws",         NULL,              "Port to bind for WebSockets"    },
+	{ "port_ws",         NULL,              "Port to bind for WebSocket"     },
 	{ "pid_file",        NULL,              "Full path for the PID file"     },
 	// XXX: here belongs something like a web SPA that interfaces with us
 	{ "static_root",     NULL,              "The root for static content"    },
@@ -2452,12 +2452,12 @@ client_scgi_create (EV_P_ int sock_fd)
 	return &self->client;
 }
 
-// --- WebSockets client handler -----------------------------------------------
+// --- WebSocket client handler ------------------------------------------------
 
 struct client_ws
 {
 	struct client client;               ///< Parent class
-	struct ws_handler handler;          ///< WebSockets connection handler
+	struct ws_handler handler;          ///< WebSocket connection handler
 };
 
 static bool
