@@ -76,6 +76,10 @@ Protocol
 *-o* _ORIGIN_, *--origin*=_ORIGIN_::
 	Set the HTTP Origin header to _ORIGIN_.  Some servers may need this.
 
+*-O*, *--openrpc*::
+	Call "rpc.discover" upon start-up in order to pull in OpenRPC data for
+	tab completion of method names.
+
 Program information
 ~~~~~~~~~~~~~~~~~~~
 *-h*, *--help*::

@@ -18,6 +18,7 @@ you get the following niceties:
    results in your favourite editor or redirect them to a file
  - ability to edit the input line in your favourite editor as well with Alt+E
  - WebSockets (RFC 6455) can also be used as a transport rather than HTTP
+ - support for method name tab completion using OpenRPC discovery
 
 Documentation
 -------------
