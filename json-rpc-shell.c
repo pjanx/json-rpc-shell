@@ -141,6 +141,8 @@ struct input
 	void (*on_input) (char *line, void *user_data);
 	/// User requested external line editing
 	void (*on_run_editor) (const char *line, void *user_data);
+	/// Tab completion generator, returns locale encoding strings or NULL
+	char *(*complete_start_word) (const char *text, int state);
 };
 
 struct input_vtable
@@ -268,7 +270,19 @@ input_rl_on_startup (void)
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-static char **app_readline_completion (const char *text, int start, int end);
+static char **
+app_readline_completion (const char *text, int start, int end)
+{
+	(void) end;
+
+	// Only customize matches for the first token, which is the method name
+	if (start)
+		return NULL;
+
+	// Don't iterate over filenames and stuff in this case
+	rl_attempted_completion_over = true;
+	return rl_completion_matches (text, g_input_rl->super.complete_start_word);
+}
 
 static void
 input_rl_start (struct input *input, const char *program_name)
@@ -638,6 +652,8 @@ input_el_install_prompt (struct input_el *self)
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
+static unsigned char input_el_on_complete (EditLine *editline, int key);
+
 static void
 input_el_start (struct input *input, const char *program_name)
 {
@@ -665,7 +681,9 @@ input_el_start (struct input *input, const char *program_name)
 		"run-editor", "Run editor to edit line", input_el_on_run_editor);
 	el_set (self->editline, EL_BIND, "M-e", "run-editor",         NULL);
 
-	// TODO: implement method name completion for editline (see degesch)
+	el_set (self->editline, EL_ADDFN,
+		"complete", "Complete word", input_el_on_complete);
+	el_set (self->editline, EL_BIND, "\t", "complete",            NULL);
 
 	// Source the user's defaults file
 	el_source (self->editline, NULL);
@@ -791,6 +809,121 @@ input_el_ding (struct input *input)
 
 	const char *ding = bell ? bell : "\a";
 	write (STDOUT_FILENO, ding, strlen (ding));
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+static int
+input_el_collate (const void *a, const void *b)
+{
+	return strcoll (*(const char **) a, *(const char **) b);
+}
+
+static struct strv
+input_el_collect_candidates (struct input_el *self, const char *word)
+{
+	struct strv v = strv_make ();
+	int i = 0; char *candidate = NULL;
+	while ((candidate = self->super.complete_start_word (word, i++)))
+		strv_append_owned (&v, candidate);
+	qsort (v.vector, v.len, sizeof *v.vector, input_el_collate);
+	return v;
+}
+
+static void
+input_el_print_candidates (struct input_el *self, const struct strv *v)
+{
+	EditLine *editline = self->editline;
+
+	// This insanity seems to be required to make it reprint the prompt
+	const LineInfoW *info = el_wline (editline);
+	int from_cursor_until_end = info->lastchar - info->cursor;
+	el_cursor (editline, from_cursor_until_end);
+	el_insertstr (editline, "\n");
+	input_el_redisplay (self);
+	el_wdeletestr (editline, 1);
+	el_set (editline, EL_REFRESH);
+	input_el_hide (&self->super);
+
+	for (size_t i = 0; i < v->len; i++)
+		printf ("%s\n", v->vector[i]);
+
+	input_el_show (&self->super);
+	el_cursor (editline, -from_cursor_until_end);
+}
+
+static void
+input_el_insert_common_prefix (EditLine *editline, const struct strv *v)
+{
+	char *p[v->len]; memcpy (p, v->vector, sizeof p);
+	mbstate_t state[v->len]; memset (state, 0, sizeof state);
+	wchar_t want[2] = {}; size_t len;
+	while ((len = mbrtowc (&want[0], p[0], strlen (p[0]), &state[0])) > 0)
+	{
+		p[0] += len;
+		for (size_t i = 1; i < v->len; i++)
+		{
+			wchar_t found = 0;
+			if ((len = mbrtowc (&found, p[i], strlen (p[i]), &state[i])) <= 0
+			 || found != want[0])
+				return;
+			p[i] += len;
+		}
+		el_winsertstr (editline, want);
+	}
+}
+
+static unsigned char
+input_el_on_complete (EditLine *editline, int key)
+{
+	(void) key;
+
+	struct input_el *self;
+	el_get (editline, EL_CLIENTDATA, &self);
+
+	// First prepare what Readline would have normally done for us...
+	const LineInfo *info_mb = el_line (editline);
+	int len = info_mb->lastchar - info_mb->buffer;
+	int point = info_mb->cursor - info_mb->buffer;
+	char *word = xstrndup (info_mb->buffer, len);
+
+	int start = point;
+	while (start && !isspace_ascii (word[start - 1]))
+		start--;
+
+	// Only complete the first word, when we're at the end of it
+	if (start != 0
+	 || (word[point] && !isspace_ascii (word[point]))
+	 || (point && isspace_ascii (word[point - 1])))
+	{
+		free (word);
+		return CC_REFRESH_BEEP;
+	}
+
+	word[point] = '\0';
+	int word_len = mbstowcs (NULL, word, 0);
+	struct strv v = input_el_collect_candidates (self, word);
+	free (word);
+	if (!v.len)
+	{
+		strv_free (&v);
+		return CC_REFRESH_BEEP;
+	}
+
+	// Remove the original word and replace it with the best (sub)match
+	el_wdeletestr (editline, word_len);
+	if (v.len == 1)
+	{
+		el_insertstr (editline, v.vector[0]);
+		el_insertstr (editline, " ");
+		strv_free (&v);
+		return CC_REFRESH;
+	}
+
+	input_el_insert_common_prefix (editline, &v);
+	input_el_print_candidates (self, &v);
+	strv_free (&v);
+	return CC_REFRESH_BEEP;
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -3127,12 +3260,8 @@ init_openrpc (struct app_context *ctx)
 	str_free (&buf);
 }
 
-// --- GNU Readline user actions -----------------------------------------------
-
-#ifdef HAVE_READLINE
-
 static char *
-app_readline_complete (const char *text, int state)
+complete_method_name (const char *text, int state)
 {
 	static struct str_map_iter iter;
 	if (!state)
@@ -3155,22 +3284,6 @@ app_readline_complete (const char *text, int state)
 	free (input);
 	return match;
 }
-
-static char **
-app_readline_completion (const char *text, int start, int end)
-{
-	(void) end;
-
-	// Only customize matches for the first token, which is the method name
-	if (start)
-		return NULL;
-
-	// Don't iterate over filenames and stuff in this case
-	rl_attempted_completion_over = true;
-	return rl_completion_matches (text, app_readline_complete);
-}
-
-#endif // HAVE_READLINE
 
 // --- Main program ------------------------------------------------------------
 
@@ -3499,6 +3612,7 @@ main (int argc, char *argv[])
 	g_ctx.input->user_data = &g_ctx;
 	g_ctx.input->on_input = process_input;
 	g_ctx.input->on_run_editor = run_editor;
+	g_ctx.input->complete_start_word = complete_method_name;
 
 	g_ctx.methods = str_map_make (NULL);
 	init_colors (&g_ctx);
