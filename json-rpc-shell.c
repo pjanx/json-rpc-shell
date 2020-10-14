@@ -1132,9 +1132,6 @@ struct backend_vtable
 	/// See if the child belongs to the backend and process the signal
 	bool (*on_child) (struct backend *backend, pid_t pid, int status);
 
-	/// Do everything necessary to deal with ev_break(EVBREAK_ALL)
-	void (*on_quit) (struct backend *backend);
-
 	/// Free any resources
 	void (*destroy) (struct backend *backend);
 };
@@ -1622,11 +1619,7 @@ struct ws_context
 
 	// Events:
 
-	bool waiting_for_event;             ///< Running a separate loop to wait?
-	struct error *e;                    ///< Error while waiting for event
-
 	ev_timer timeout_watcher;           ///< Connection timeout watcher
-	struct str *response_buffer;        ///< Buffer for the incoming messages
 
 	// The TCP transport:
 
@@ -1785,10 +1778,10 @@ backend_ws_on_data (struct ws_context *self, const void *data, size_t len)
 			return false;
 		}
 
-		// Finished the handshake, return to caller
-		// (we run a separate loop to wait for the handshake to finish)
+		// Finished the handshake, try to return to caller
+		// (we run a separate loop to wait for the handshake to finish).
 		self->state = WS_HANDLER_OPEN;
-		ev_break (EV_DEFAULT_ EVBREAK_ONE);
+		await_try_finish (self->ctx, NULL, 0);
 
 		if ((len -= n_parsed))
 			return ws_parser_push (&self->parser,
@@ -1833,13 +1826,7 @@ backend_ws_close_connection (struct ws_context *self)
 
 	// That would have no way of succeeding
 	// XXX: what if we're waiting for the close?
-	if (self->waiting_for_event)
-	{
-		if (!self->e)
-			error_set (&self->e, "unexpected connection close");
-
-		ev_break (EV_DEFAULT_ EVBREAK_ONE);
-	}
+	await_try_cancel (self->ctx);
 }
 
 static void
@@ -2196,19 +2183,7 @@ backend_ws_on_message (struct ws_context *self,
 	if (type != WS_OPCODE_TEXT)
 		return backend_ws_fail (self, WS_STATUS_UNSUPPORTED_DATA);
 
-	if (!self->waiting_for_event || !self->response_buffer)
-	{
-		char *s = iconv_xstrdup (self->ctx->term_from_utf8,
-			(char *) data, len + 1 /* null byte */, NULL);
-		// Does not affect JSON and ensures the message is printed out okay
-		cstr_transform (s, normalize_whitespace);
-		print_warning ("unexpected message received: %s", s);
-		free (s);
-		return true;
-	}
-
-	str_append_data (self->response_buffer, data, len);
-	ev_break (EV_DEFAULT_ EVBREAK_ONE);
+	await_try_finish (self->ctx, data, len);
 	return true;
 }
 
@@ -2251,8 +2226,8 @@ backend_ws_on_connection_timeout (EV_P_ ev_timer *handle, int revents)
 	(void) revents;
 
 	struct ws_context *self = handle->data;
-	hard_assert (self->waiting_for_event);
-	error_set (&self->e, "connection timeout");
+	hard_assert (self->ctx->awaiting && !self->ctx->await_response);
+	error_set (&self->ctx->await_error, "connection timeout");
 	backend_ws_close_connection (self);
 }
 
@@ -2354,20 +2329,8 @@ backend_ws_connect (struct ws_context *self, struct error **e)
 
 	// Run an event loop to process the handshake
 	ev_timer_start (EV_DEFAULT_ &self->timeout_watcher);
-	self->waiting_for_event = true;
-
-	ev_run (EV_DEFAULT_ 0);
-
-	self->waiting_for_event = false;
+	result = await (self->ctx, NULL /* response_buffer */, e);
 	ev_timer_stop (EV_DEFAULT_ &self->timeout_watcher);
-
-	if (self->e)
-	{
-		error_propagate (e, self->e);
-		self->e = NULL;
-	}
-	else
-		result = true;
 
 fail_2:
 	if (!result && self->server_fd != -1)
@@ -2402,35 +2365,7 @@ backend_ws_make_call (struct backend *backend,
 			return false;
 	}
 
-	if (expect_content)
-	{
-		// Run an event loop to retrieve the response
-		self->response_buffer = buf;
-		self->waiting_for_event = true;
-
-		ev_run (EV_DEFAULT_ 0);
-
-		self->waiting_for_event = false;
-		self->response_buffer = NULL;
-
-		if (self->e)
-		{
-			error_propagate (e, self->e);
-			self->e = NULL;
-			return false;
-		}
-	}
-	return true;
-}
-
-static void
-backend_ws_on_quit (struct backend *backend)
-{
-	struct ws_context *self = (struct ws_context *) backend;
-	if (self->waiting_for_event && !self->e)
-		error_set (&self->e, "aborted by user");
-
-	// We also have to be careful not to change the ev_break status
+	return !expect_content || await (self->ctx, buf, e);
 }
 
 static void
@@ -2445,8 +2380,6 @@ backend_ws_destroy (struct backend *backend)
 
 	free (self->endpoint);
 	strv_free (&self->extra_headers);
-	if (self->e)
-		error_free (self->e);
 	ev_timer_stop (EV_DEFAULT_ &self->timeout_watcher);
 	if (self->ssl_ctx)
 		SSL_CTX_free (self->ssl_ctx);
@@ -2462,7 +2395,6 @@ static struct backend_vtable backend_ws_vtable =
 {
 	.add_header = backend_ws_add_header,
 	.make_call  = backend_ws_make_call,
-	.on_quit    = backend_ws_on_quit,
 	.destroy    = backend_ws_destroy,
 };
 
@@ -3269,8 +3201,6 @@ json_highlight (struct app_context *ctx, const char *s, FILE *output)
 static void
 quit (struct app_context *ctx)
 {
-	if (ctx->backend->vtable->on_quit)
-		ctx->backend->vtable->on_quit (ctx->backend);
 	if (ctx->awaiting && !ctx->await_error)
 		error_set (&ctx->await_error, "aborted by user");
 
