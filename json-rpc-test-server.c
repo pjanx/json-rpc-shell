@@ -1003,9 +1003,10 @@ ws_handler_on_headers_complete (http_parser *parser)
 	if (self->have_header_value)
 		ws_handler_on_header_read (self);
 
-	// We strictly require a protocol upgrade
+	// We require a protocol upgrade.  1 is for "skip body", 2 is the same
+	// + "stop processing", return another number to indicate a problem here.
 	if (!parser->upgrade)
-		return 2;
+		return 3;
 
 	return 0;
 }
@@ -1268,11 +1269,13 @@ ws_handler_push (struct ws_handler *self, const void *data, size_t len)
 		ev_timer_stop (EV_DEFAULT_ &self->handshake_timeout_watcher);
 
 		if (err == HPE_CB_headers_complete)
+		{
 			print_debug ("WS handshake failed: %s", "missing `Upgrade' field");
-		else
-			print_debug ("WS handshake failed: %s",
-				http_errno_description (err));
+			FAIL_HANDSHAKE (HTTP_426_UPGRADE_REQUIRED,
+				"Upgrade: websocket", SEC_WS_VERSION ": 13");
+		}
 
+		print_debug ("WS handshake failed: %s", http_errno_description (err));
 		FAIL_HANDSHAKE (HTTP_400_BAD_REQUEST);
 	}
 	return true;
