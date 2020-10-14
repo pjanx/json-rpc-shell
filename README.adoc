@@ -2,15 +2,16 @@ json-rpc-shell
 ==============
 :compact-option:
 
-'json-rpc-shell' is a simple shell for running JSON-RPC 2.0 queries.
+'json-rpc-shell' is a shell for running JSON-RPC 2.0 queries.
 
-This software has been created as a replacement for the following shell, which
-is written in Java: http://software.dzhuvinov.com/json-rpc-2.0-shell.html
+This software was originally created as a replacement for
+http://software.dzhuvinov.com/json-rpc-2.0-shell.html[a different one] made by
+Vladimir Dzhuvinov, in order to avoid Java, but has evolved since.
 
 Features
 --------
-In addition to most of the features provided by Vladimir Dzhuvinov's shell
-you get the following niceties:
+In addition to most of the features provided by its predecessor, you will get
+the following niceties:
 
  - configurable JSON syntax highlight, which with prettyprinting turned on
    helps you make sense of the results significantly
@@ -18,7 +19,7 @@ you get the following niceties:
    results in your favourite editor or redirect them to a file
  - ability to edit the input line in your favourite editor as well with Alt+E
  - WebSocket (RFC 6455) can also be used as a transport rather than HTTP
- - support for method name tab completion using OpenRPC discovery
+ - support for method name tab completion using OpenRPC discovery or file input
 
 Documentation
 -------------

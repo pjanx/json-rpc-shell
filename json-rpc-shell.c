@@ -1,5 +1,5 @@
 /*
- * json-rpc-shell.c: simple JSON-RPC 2.0 shell
+ * json-rpc-shell.c: a shell for JSON-RPC 2.0
  *
  * Copyright (c) 2014 - 2020, Přemysl Eric Janouch <p@janouch.name>
  *
@@ -3587,7 +3587,7 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv,
 	};
 
 	struct opt_handler oh = opt_handler_make (argc, argv, opts,
-		"ENDPOINT", "A simple JSON-RPC 2.0 shell.");
+		"ENDPOINT", "A shell for JSON-RPC 2.0.");
 
 	int c;
 	while ((c = opt_handler_get (&oh)) != -1)

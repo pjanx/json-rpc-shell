@@ -6,7 +6,7 @@ json-rpc-shell(1)
 
 Name
 ----
-json-rpc-shell - a simple JSON-RPC 2.0 shell
+json-rpc-shell - a shell for JSON-RPC 2.0
 
 Synopsis
 --------
