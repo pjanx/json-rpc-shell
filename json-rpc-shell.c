@@ -1400,6 +1400,129 @@ on_config_attribute_change (struct config_item *item)
 	}
 }
 
+// --- http-parser wrapper -----------------------------------------------------
+
+struct http_parserpp
+{
+	http_parser parser;                 ///< HTTP parser
+	bool have_header_value;             ///< Parsing header value or field?
+	struct str field;                   ///< Field part buffer
+	struct str value;                   ///< Value part buffer
+	struct str_map headers;             ///< HTTP headers
+	struct str message;                 ///< Message data
+};
+
+static void
+http_parserpp_init (struct http_parserpp *self, enum http_parser_type type)
+{
+	http_parser_init (&self->parser, type);
+	self->parser.data = self;
+
+	self->field = str_make ();
+	self->value = str_make ();
+	self->headers = str_map_make (free);
+	self->headers.key_xfrm = tolower_ascii_strxfrm;
+	self->message = str_make ();
+}
+
+static void
+http_parserpp_free (struct http_parserpp *self)
+{
+	str_free (&self->field);
+	str_free (&self->value);
+	str_map_free (&self->headers);
+	str_free (&self->message);
+}
+
+static bool
+http_parserpp_header_field_is_a_list (const char *name)
+{
+	// This must contain all header fields we use for anything
+	static const char *concatenable[] =
+		{ SEC_WS_PROTOCOL, SEC_WS_EXTENSIONS, "Upgrade" };
+
+	for (size_t i = 0; i < N_ELEMENTS (concatenable); i++)
+		if (!strcasecmp_ascii (name, concatenable[i]))
+			return true;
+	return false;
+}
+
+static void
+http_parserpp_on_header_read (struct http_parserpp *self)
+{
+	// The HTTP parser unfolds values and removes preceding whitespace, but
+	// otherwise doesn't touch the values or the following whitespace.
+
+	// RFC 7230 states that trailing whitespace is not part of a field value
+	char *value = self->field.str;
+	size_t len = self->field.len;
+	while (len--)
+		if (value[len] == '\t' || value[len] == ' ')
+			value[len] = '\0';
+		else
+			break;
+	self->field.len = len;
+
+	const char *field = self->field.str;
+	const char *current = str_map_find (&self->headers, field);
+	if (http_parserpp_header_field_is_a_list (field) && current)
+		str_map_set (&self->headers, field,
+			xstrdup_printf ("%s, %s", current, self->value.str));
+	else
+		// If the field cannot be concatenated, just overwrite the last value.
+		// Maybe we should issue a warning or something.
+		str_map_set (&self->headers, field, xstrdup (self->value.str));
+}
+
+static int
+http_parserpp_on_header_field (http_parser *parser, const char *at, size_t len)
+{
+	struct http_parserpp *self = parser->data;
+	if (self->have_header_value)
+	{
+		http_parserpp_on_header_read (self);
+		str_reset (&self->field);
+		str_reset (&self->value);
+	}
+	str_append_data (&self->field, at, len);
+	self->have_header_value = false;
+	return 0;
+}
+
+static int
+http_parserpp_on_header_value (http_parser *parser, const char *at, size_t len)
+{
+	struct http_parserpp *self = parser->data;
+	str_append_data (&self->value, at, len);
+	self->have_header_value = true;
+	return 0;
+}
+
+static int
+http_parserpp_on_headers_complete (http_parser *parser)
+{
+	struct http_parserpp *self = parser->data;
+	if (self->have_header_value)
+		http_parserpp_on_header_read (self);
+	return 0;
+}
+
+static int
+http_parserpp_on_message_begin (http_parser *parser)
+{
+	struct http_parserpp *self = parser->data;
+	str_reset (&self->message);
+	return 0;
+}
+
+static int
+http_parserpp_on_body (http_parser *parser, const char *at, size_t len)
+{
+	struct http_parserpp *self = parser->data;
+	str_append_data (&self->message, at, len);
+	return 0;
+}
+
 // --- WebSocket backend -------------------------------------------------------
 
 enum ws_handler_state
@@ -1443,12 +1566,7 @@ struct ws_context
 	enum ws_handler_state state;        ///< State
 	char *key;                          ///< Key for the current handshake
 
-	http_parser hp;                     ///< HTTP parser
-	bool have_header_value;             ///< Parsing header value or field?
-	struct str field;                   ///< Field part buffer
-	struct str value;                   ///< Value part buffer
-	struct str_map headers;             ///< HTTP Headers
-
+	struct http_parserpp http;          ///< HTTP parser
 	struct ws_parser parser;            ///< Protocol frame parser
 	bool expecting_continuation;        ///< For non-control traffic
 
@@ -1530,109 +1648,41 @@ start:
 }
 
 static bool
-backend_ws_header_field_is_a_list (const char *name)
-{
-	// This must contain all header fields we use for anything
-	static const char *concatenable[] =
-		{ SEC_WS_PROTOCOL, SEC_WS_EXTENSIONS, "Upgrade" };
-
-	for (size_t i = 0; i < N_ELEMENTS (concatenable); i++)
-		if (!strcasecmp_ascii (name, concatenable[i]))
-			return true;
-	return false;
-}
-
-static void
-backend_ws_on_header_read (struct ws_context *self)
-{
-	// The HTTP parser unfolds values and removes preceding whitespace, but
-	// otherwise doesn't touch the values or the following whitespace.
-
-	// RFC 7230 states that trailing whitespace is not part of a field value
-	char *value = self->field.str;
-	size_t len = self->field.len;
-	while (len--)
-		if (value[len] == '\t' || value[len] == ' ')
-			value[len] = '\0';
-		else
-			break;
-	self->field.len = len;
-
-	const char *field = self->field.str;
-	const char *current = str_map_find (&self->headers, field);
-	if (backend_ws_header_field_is_a_list (field) && current)
-		str_map_set (&self->headers, field,
-			xstrdup_printf ("%s, %s", current, self->value.str));
-	else
-		// If the field cannot be concatenated, just overwrite the last value.
-		// Maybe we should issue a warning or something.
-		str_map_set (&self->headers, field, xstrdup (self->value.str));
-}
-
-static int
-backend_ws_on_header_field (http_parser *parser, const char *at, size_t len)
-{
-	struct ws_context *self = parser->data;
-	if (self->have_header_value)
-	{
-		backend_ws_on_header_read (self);
-		str_reset (&self->field);
-		str_reset (&self->value);
-	}
-	str_append_data (&self->field, at, len);
-	self->have_header_value = false;
-	return 0;
-}
-
-static int
-backend_ws_on_header_value (http_parser *parser, const char *at, size_t len)
-{
-	struct ws_context *self = parser->data;
-	str_append_data (&self->value, at, len);
-	self->have_header_value = true;
-	return 0;
-}
-
-static int
-backend_ws_on_headers_complete (http_parser *parser)
-{
-	struct ws_context *self = parser->data;
-	if (self->have_header_value)
-		backend_ws_on_header_read (self);
-
-	// We require a protocol upgrade.  1 is for "skip body", 2 is the same
-	// + "stop processing", return another number to indicate a problem here.
-	if (!parser->upgrade)
-		return 3;
-
-	return 0;
-}
-
-static bool
 backend_ws_finish_handshake (struct ws_context *self, struct error **e)
 {
-	if (self->hp.http_major != 1 || self->hp.http_minor < 1)
+	if (self->http.parser.http_major != 1 || self->http.parser.http_minor < 1)
 		FAIL ("incompatible HTTP version: %d.%d",
-			self->hp.http_major, self->hp.http_minor);
+			self->http.parser.http_major, self->http.parser.http_minor);
 
-	const char *upgrade = str_map_find (&self->headers, "Upgrade");
+	const char *upgrade = str_map_find (&self->http.headers, "Upgrade");
 	if (!upgrade || strcasecmp_ascii (upgrade, "websocket"))
 		FAIL ("cannot upgrade connection to WebSocket");
 
-	const char *accept = str_map_find (&self->headers, SEC_WS_ACCEPT);
+	const char *accept = str_map_find (&self->http.headers, SEC_WS_ACCEPT);
 	char *accept_expected = ws_encode_response_key (self->key);
 	bool accept_ok = accept && !strcmp (accept, accept_expected);
 	free (accept_expected);
 	if (!accept_ok)
 		FAIL ("missing or invalid " SEC_WS_ACCEPT " header");
 
-	const char *extensions = str_map_find (&self->headers, SEC_WS_EXTENSIONS);
-	const char *protocol = str_map_find (&self->headers, SEC_WS_PROTOCOL);
-	if (extensions || protocol)
+	if (str_map_find (&self->http.headers, SEC_WS_EXTENSIONS)
+	 || str_map_find (&self->http.headers, SEC_WS_PROTOCOL))
 		// TODO: actually parse these fields
 		FAIL ("unexpected WebSocket extension or protocol");
 
 	return true;
+}
+
+static int
+backend_ws_on_headers_complete (http_parser *parser)
+{
+	// We require a protocol upgrade.  1 is for "skip body", 2 is the same
+	// + "stop processing", return another number to indicate a problem here.
+	http_parserpp_on_headers_complete (parser);
+	if (!parser->upgrade)
+		return 3;
+
+	return 0;
 }
 
 static bool
@@ -1644,15 +1694,15 @@ backend_ws_on_data (struct ws_context *self, const void *data, size_t len)
 	// The handshake hasn't been done yet, process HTTP headers
 	static const http_parser_settings http_settings =
 	{
-		.on_header_field     = backend_ws_on_header_field,
-		.on_header_value     = backend_ws_on_header_value,
+		.on_header_field     = http_parserpp_on_header_field,
+		.on_header_value     = http_parserpp_on_header_value,
 		.on_headers_complete = backend_ws_on_headers_complete,
 	};
 
-	size_t n_parsed = http_parser_execute (&self->hp,
+	size_t n_parsed = http_parser_execute (&self->http.parser,
 		&http_settings, data, len);
 
-	if (self->hp.upgrade)
+	if (self->http.parser.upgrade)
 	{
 		struct error *e = NULL;
 		if (!backend_ws_finish_handshake (self, &e))
@@ -1674,12 +1724,12 @@ backend_ws_on_data (struct ws_context *self, const void *data, size_t len)
 		return true;
 	}
 
-	enum http_errno err = HTTP_PARSER_ERRNO (&self->hp);
+	enum http_errno err = HTTP_PARSER_ERRNO (&self->http.parser);
 	if (n_parsed != len || err != HPE_OK)
 	{
 		if (err == HPE_CB_headers_complete)
 			print_error ("WS handshake failed: %s (status code %d)",
-				"connection cannot be upgraded", self->hp.status_code);
+				"connection cannot be upgraded", self->http.parser.status_code);
 		else
 			print_error ("WS handshake failed: %s",
 				http_errno_description (err));
@@ -2221,11 +2271,8 @@ backend_ws_connect (struct ws_context *self, struct error **e)
 		goto fail_2;
 	}
 
-	http_parser_init (&self->hp, HTTP_RESPONSE);
-	self->hp.data = self;
-	str_reset (&self->field);
-	str_reset (&self->value);
-	str_map_clear (&self->headers);
+	http_parserpp_free (&self->http);
+	http_parserpp_init (&self->http, HTTP_RESPONSE);
 	ws_parser_free (&self->parser);
 	self->parser = ws_parser_make ();
 	self->parser.on_frame_header = backend_ws_on_frame_header;
@@ -2343,9 +2390,7 @@ backend_ws_destroy (struct backend *backend)
 	if (self->ssl_ctx)
 		SSL_CTX_free (self->ssl_ctx);
 	free (self->key);
-	str_free (&self->field);
-	str_free (&self->value);
-	str_map_free (&self->headers);
+	http_parserpp_free (&self->http);
 	ws_parser_free (&self->parser);
 	str_free (&self->message_data);
 }
@@ -2371,11 +2416,7 @@ backend_ws_new (struct app_context *ctx,
 	ev_timer_init (&self->timeout_watcher, NULL, 0, 0);
 	self->server_fd = -1;
 	ev_io_init (&self->read_watcher, NULL, 0, 0);
-	http_parser_init (&self->hp, HTTP_RESPONSE);
-	self->field = str_make ();
-	self->value = str_make ();
-	self->headers = str_map_make (free);
-	self->headers.key_xfrm = tolower_ascii_strxfrm;
+	http_parserpp_init (&self->http, HTTP_RESPONSE);
 	self->parser = ws_parser_make ();
 	self->message_data = str_make ();
 	self->extra_headers = strv_make ();
