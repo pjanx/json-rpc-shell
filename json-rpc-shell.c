@@ -1538,7 +1538,7 @@ backend_ws_header_field_is_a_list (const char *name)
 {
 	// This must contain all header fields we use for anything
 	static const char *concatenable[] =
-		{ SEC_WS_PROTOCOL, SEC_WS_EXTENSIONS, "Connection", "Upgrade" };
+		{ SEC_WS_PROTOCOL, SEC_WS_EXTENSIONS, "Upgrade" };
 
 	for (size_t i = 0; i < N_ELEMENTS (concatenable); i++)
 		if (!strcasecmp_ascii (name, concatenable[i]))
@@ -1604,9 +1604,10 @@ backend_ws_on_headers_complete (http_parser *parser)
 	if (self->have_header_value)
 		backend_ws_on_header_read (self);
 
-	// We strictly require a protocol upgrade
+	// We require a protocol upgrade.  1 is for "skip body", 2 is the same
+	// + "stop processing", return another number to indicate a problem here.
 	if (!parser->upgrade)
-		return 2;
+		return 3;
 
 	return 0;
 }
@@ -1618,18 +1619,8 @@ backend_ws_finish_handshake (struct ws_context *self, struct error **e)
 		FAIL ("incompatible HTTP version: %d.%d",
 			self->hp.http_major, self->hp.http_minor);
 
-	if (self->hp.status_code != 101)
-		// TODO: handle other codes?
-		FAIL ("unexpected status code: %d", self->hp.status_code);
-
 	const char *upgrade = str_map_find (&self->headers, "Upgrade");
 	if (!upgrade || strcasecmp_ascii (upgrade, "websocket"))
-		FAIL ("cannot upgrade connection to WebSocket");
-
-	const char *connection = str_map_find (&self->headers, "Connection");
-	if (!connection || strcasecmp_ascii (connection, "Upgrade"))
-		// XXX: maybe we shouldn't be so strict and only check for presence
-		//   of the "Upgrade" token in this list
 		FAIL ("cannot upgrade connection to WebSocket");
 
 	const char *accept = str_map_find (&self->headers, SEC_WS_ACCEPT);
@@ -1691,7 +1682,8 @@ backend_ws_on_data (struct ws_context *self, const void *data, size_t len)
 	if (n_parsed != len || err != HPE_OK)
 	{
 		if (err == HPE_CB_headers_complete)
-			print_error ("WS handshake failed: %s", "missing `Upgrade' field");
+			print_error ("WS handshake failed: %s (status code %d)",
+				"connection cannot be upgraded", self->hp.status_code);
 		else
 			print_error ("WS handshake failed: %s",
 				http_errno_description (err));
