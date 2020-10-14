@@ -111,7 +111,7 @@ requests, it is often convenient or even necessary to run a full text editor
 in order to construct complex objects or arrays, and may even be used to import
 data from elsewhere.  You can launch an editor for the current request using
 the M-e key combination.  Both *readline*(3) and *editline*(7) also support
-multiline editing natively, though you need to press C-v C-j in order to insert
+multiline editing natively, press either M-Enter or C-v C-j in order to insert
 newlines.
 
 WebSocket
