@@ -67,11 +67,7 @@ enum
 #include <term.h>
 
 /// Shorthand to set an error and return failure from the function
-#define FAIL(...)                                                              \
-	BLOCK_START                                                                \
-		error_set (e, __VA_ARGS__);                                            \
-		return false;                                                          \
-	BLOCK_END
+#define FAIL(...) return error_set (e, __VA_ARGS__)
 
 // --- Terminal ----------------------------------------------------------------
 
