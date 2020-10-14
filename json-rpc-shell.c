@@ -1624,8 +1624,7 @@ start:
 }
 
 static enum ws_read_result
-backend_ws_fill_read_buffer
-	(struct ws_context *self, void *buf, size_t *len)
+backend_ws_fill_read_buffer (struct ws_context *self, void *buf, size_t *len)
 {
 	ssize_t n_read;
 start:
@@ -1776,47 +1775,37 @@ backend_ws_on_fd_ready (EV_P_ ev_io *handle, int revents)
 	(void) revents;
 
 	struct ws_context *self = handle->data;
+	uint8_t buf[BUFSIZ];
+	size_t n_read;
 
-	enum ws_read_result (*fill_buffer)(struct ws_context *, void *, size_t *)
-		= self->ssl
-		? backend_ws_fill_read_buffer_tls
-		: backend_ws_fill_read_buffer;
-	bool close_connection = false;
+restart:
+	n_read = sizeof buf;
 
-	uint8_t buf[8192];
-	while (true)
+	// Try to read some data in a non-blocking manner
+	(void) set_blocking (self->server_fd, false);
+	enum ws_read_result result = self->ssl
+		? backend_ws_fill_read_buffer_tls (self, buf, &n_read)
+		: backend_ws_fill_read_buffer (self, buf, &n_read);
+	(void) set_blocking (self->server_fd, true);
+
+	switch (result)
 	{
-		// Try to read some data in a non-blocking manner
-		size_t n_read = sizeof buf;
-		(void) set_blocking (self->server_fd, false);
-		enum ws_read_result result = fill_buffer (self, buf, &n_read);
-		(void) set_blocking (self->server_fd, true);
+	case WS_READ_AGAIN:
+		return;
+	case WS_READ_ERROR:
+		print_error ("reading from the server failed");
+		break;
+	case WS_READ_EOF:
+		print_status ("the server closed the connection");
+		break;
+	case WS_READ_OK:
+		if (backend_ws_on_data (self, buf, n_read))
+			goto restart;
 
-		switch (result)
-		{
-		case WS_READ_AGAIN:
-			goto end;
-		case WS_READ_ERROR:
-			print_error ("reading from the server failed");
-			close_connection = true;
-			goto end;
-		case WS_READ_EOF:
-			print_status ("the server closed the connection");
-			close_connection = true;
-			goto end;
-		case WS_READ_OK:
-			if (backend_ws_on_data (self, buf, n_read))
-				break;
-
-			// XXX: maybe we should wait until we receive an EOF
-			close_connection = true;
-			goto end;
-		}
+		// XXX: maybe we should wait until we receive an EOF
 	}
 
-end:
-	if (close_connection)
-		backend_ws_close_connection (self);
+	backend_ws_close_connection (self);
 }
 
 static bool
