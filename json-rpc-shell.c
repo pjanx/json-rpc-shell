@@ -2291,6 +2291,8 @@ backend_ws_connect (struct ws_context *self, struct error **e)
 	str_append_printf (&request, "GET %s HTTP/1.1\r\n", url_path.str);
 	// TODO: omit the port if it's the default (check RFC for "SHOULD" or ...)
 	str_append_printf (&request, "Host: %s:%s\r\n", url_host, url_port);
+	str_append_printf (&request, "User-Agent: %s/%s\r\n",
+		PROGRAM_NAME, PROGRAM_VERSION);
 	str_append_printf (&request, "Upgrade: websocket\r\n");
 	str_append_printf (&request, "Connection: upgrade\r\n");
 	str_append_printf (&request, SEC_WS_KEY ": %s\r\n", key_b64_string);
