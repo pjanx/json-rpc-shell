@@ -851,6 +851,17 @@ ws_handler_on_close_timeout (EV_P_ ev_timer *watcher, int revents)
 	self->close_cb (self, false /* half_close */);
 }
 
+static bool ws_handler_fail_handshake (struct ws_handler *self,
+	const char *status, ...) ATTRIBUTE_SENTINEL;
+
+#define HTTP_101_SWITCHING_PROTOCOLS    "101 Switching Protocols"
+#define HTTP_400_BAD_REQUEST            "400 Bad Request"
+#define HTTP_405_METHOD_NOT_ALLOWED     "405 Method Not Allowed"
+#define HTTP_408_REQUEST_TIMEOUT        "408 Request Timeout"
+#define HTTP_417_EXPECTATION_FAILED     "407 Expectation Failed"
+#define HTTP_426_UPGRADE_REQUIRED       "426 Upgrade Required"
+#define HTTP_505_VERSION_NOT_SUPPORTED  "505 HTTP Version Not Supported"
+
 static void
 ws_handler_on_handshake_timeout (EV_P_ ev_timer *watcher, int revents)
 {
@@ -858,13 +869,7 @@ ws_handler_on_handshake_timeout (EV_P_ ev_timer *watcher, int revents)
 	(void) revents;
 	struct ws_handler *self = watcher->data;
 
-	// XXX: this is a no-op, since this currently doesn't even call shutdown
-	//   immediately but postpones it until later
-	self->close_cb (self, true /* half_close */);
-	self->state = WS_HANDLER_FLUSHING;
-
-	if (self->on_close)
-		self->on_close (self, WS_STATUS_ABNORMAL_CLOSURE, "handshake timeout");
+	ws_handler_fail_handshake (self, HTTP_408_REQUEST_TIMEOUT, NULL);
 
 	self->state = WS_HANDLER_CLOSED;
 	self->close_cb (self, false /* half_close */);
@@ -1019,13 +1024,6 @@ ws_handler_on_url (http_parser *parser, const char *at, size_t len)
 	return 0;
 }
 
-#define HTTP_101_SWITCHING_PROTOCOLS    "101 Switching Protocols"
-#define HTTP_400_BAD_REQUEST            "400 Bad Request"
-#define HTTP_405_METHOD_NOT_ALLOWED     "405 Method Not Allowed"
-#define HTTP_417_EXPECTATION_FAILED     "407 Expectation Failed"
-#define HTTP_426_UPGRADE_REQUIRED       "426 Upgrade Required"
-#define HTTP_505_VERSION_NOT_SUPPORTED  "505 HTTP Version Not Supported"
-
 static void
 ws_handler_http_responsev (struct ws_handler *self,
 	const char *status, char *const *fields)
@@ -1067,6 +1065,7 @@ ws_handler_fail_handshake (struct ws_handler *self, const char *status, ...)
 	struct strv v = strv_make ();
 	while ((s = va_arg (ap, const char *)))
 		strv_append (&v, s);
+	strv_append (&v, "Connection: close");
 
 	va_end (ap);
 	ws_handler_http_responsev (self, status, v.vector);
@@ -2083,6 +2082,8 @@ static void
 client_shutdown (struct client *self)
 {
 	self->flushing = true;
+	// In case this shutdown is immediately followed by a close, try our best
+	(void) flush_queue (&self->write_queue, self->socket_fd);
 	ev_feed_event (EV_DEFAULT_ &self->write_watcher, EV_WRITE);
 }
 
