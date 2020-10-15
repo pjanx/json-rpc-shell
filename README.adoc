@@ -65,8 +65,8 @@ Test server
 -----------
 If you install development packages for libmagic, an included test server will
 be built but not installed which provides a trivial JSON-RPC 2.0 service with
-FastCGI, SCGI, and WebSocket interfaces.  It responds to `ping` and `date`
-methods and it can serve static files.
+FastCGI, SCGI, WebSocket and LSP-like co-process interfaces.  It responds to
+`ping` and `date`, supports OpenRPC discovery and it can serve static files.
 
 Contributing and Support
 ------------------------

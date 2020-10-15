@@ -2623,7 +2623,7 @@ static const http_parser_settings backend_co_http_settings =
 };
 
 static bool
-backend_co_write_starter (struct co_context *self, struct error **e)
+backend_co_inject_starter (struct co_context *self, struct error **e)
 {
 	// The default "Connection: keep-alive" maps well here.
 	// We cannot feed this line into the parser from within callbacks.
@@ -2653,7 +2653,7 @@ backend_co_parse (struct co_context *self, const char *data, size_t len,
 	if (self->pending_fake_starter)
 	{
 		self->pending_fake_starter = false;
-		if (!backend_co_write_starter (self, e))
+		if (!backend_co_inject_starter (self, e))
 			return false;
 	}
 
