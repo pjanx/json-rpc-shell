@@ -2641,7 +2641,7 @@ client_co_process (struct co_context *self)
 }
 
 static void
-backend_co_parse (struct co_context *self, const char *data, size_t len,
+client_co_parse (struct co_context *self, const char *data, size_t len,
 	size_t *n_parsed)
 {
 	if (self->pending_fake_starter)
@@ -2666,12 +2666,12 @@ backend_co_parse (struct co_context *self, const char *data, size_t len,
 }
 
 static void
-backend_co_on_data (struct co_context *self, const char *data, size_t len)
+client_co_on_data (struct co_context *self, const char *data, size_t len)
 {
 	size_t n_parsed = 0;
 	do
 	{
-		backend_co_parse (self, data, len, &n_parsed);
+		client_co_parse (self, data, len, &n_parsed);
 		data += n_parsed;
 	}
 	while ((len -= n_parsed));
@@ -2700,7 +2700,7 @@ client_co_run (struct server_context *ctx)
 		int errno_saved = errno;
 
 		if (buf.len)
-			backend_co_on_data (&self, buf.str, buf.len);
+			client_co_on_data (&self, buf.str, buf.len);
 		if (result == SOCKET_IO_ERROR)
 			exit_fatal ("read: %s", strerror (errno_saved));
 		if (result == SOCKET_IO_EOF)
