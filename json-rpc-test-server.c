@@ -1654,15 +1654,37 @@ struct request_handler
 	LIST_HEADER (struct request_handler)
 
 	/// Install ourselves as the handler for the request, if applicable.
+	/// If the request contains data, check it against CONTENT_LENGTH.
+	/// ("Transfer-Encoding: chunked" should be dechunked by the HTTP server,
+	/// however it is possible that it mishandles this situation.)
 	/// Sets @a continue_ to false if further processing should be stopped,
 	/// meaning the request has already been handled.
+	/// Note that starting the response before receiving all data denies you
+	/// the option of returning error status codes based on the data.
 	bool (*try_handle) (struct request *request,
 		struct str_map *headers, bool *continue_);
 
 	/// Handle incoming data.  "len == 0" means EOF.
 	/// Returns false if there is no more processing to be done.
-	// FIXME: the EOF may or may not be delivered when request is cut short,
-	//   we should fix FastCGI not to deliver it on CONTENT_LENGTH mismatch
+	/// EOF is never delivered on a network error (see client_read_loop()).
+	// XXX: the EOF may or may not be delivered when the request is cut short:
+	//  - client_scgi delivers an EOF when it itself receives an EOF without
+	//    considering any mismatch, and it can deliver another one earlier
+	//    when the counter just goes down to 0... depends on what we return
+	//    from here upon the first occasion (whether we want to close).
+	//  - FCGI_ABORT_REQUEST /might/ not close the stdin and it /might/ cover
+	//    a CONTENT_LENGTH mismatch, since this callback wouldn't get invoked.
+	//    The FastCGI specification explicitly says to compare CONTENT_LENGTH
+	//    against the number of received bytes, which may only be smaller.
+	//
+	// We might want to adjust client_scgi and client_fcgi to not invoke
+	// request_push(EOF) when CONTENT_LENGTH hasn't been reached and remove
+	// the extra EOF generation from client_scgi (why is it there, does the
+	// server keep the connection open, or is it just a precaution?)
+	//
+	// The finalization callback takes care of any needs to destruct data.
+	// If we handle this reliably in all clients, try_handle won't have to,
+	// as it will run in a stricter-than-CGI scenario.
 	bool (*push_cb) (struct request *request, const void *data, size_t len);
 
 	/// Destroy the handler's data stored in the request object
@@ -1784,7 +1806,9 @@ request_handler_json_rpc_push
 
 	// TODO: check buf.len against CONTENT_LENGTH; if it's less, then the
 	//   client hasn't been successful in transferring all of its data.
-	//   See also comment on request_handler::push_cb.
+	//   See also comment on request_handler::push_cb.  For JSON-RPC, though,
+	//   it shouldn't matter as an incomplete request will be invalid and
+	//   clients have no reason to append unnecessary trailing bytes.
 
 	struct str response = str_make ();
 	str_append (&response, "Status: 200 OK\n");
@@ -1947,8 +1971,8 @@ request_handler_static_try_handle
 		request_write (request, buf, len);
 	fclose (fp);
 
-	// TODO: this should rather not be returned all at once but in chunks;
-	//   file read requests never return EAGAIN
+	// TODO: this should rather not be returned all at once but in chunks
+	//   (consider Transfer-Encoding); file read requests never return EAGAIN
 	// TODO: actual file data should really be returned by a callback when
 	//   the socket is writable with nothing to be sent (pumping the entire
 	//   file all at once won't really work if it's huge).
@@ -2395,14 +2419,15 @@ client_scgi_on_content (void *user_data, const void *data, size_t len)
 		print_debug ("SCGI request got more data than CONTENT_LENGTH");
 		return false;
 	}
-	// We're in a slight disagreement with the specification since
+	// We're in a slight disagreement with the SCGI specification since
 	// this tries to write output before it has read all the input
 	if (!request_push (&self->request, data, len))
 		return false;
+	if ((self->remaining_content -= len))
+		return true;
 
 	// Signalise end of input to the request handler
-	return (self->remaining_content -= len) != 0
-		|| request_push (&self->request, NULL, 0);
+	return request_push (&self->request, NULL, 0);
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
