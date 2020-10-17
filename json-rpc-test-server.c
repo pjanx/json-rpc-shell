@@ -1925,8 +1925,13 @@ request_handler_static_try_handle
 	char *path = xstrdup_printf ("%s%s", root, suffix);
 	print_debug ("trying to statically serve %s", path);
 
-	// TODO: check that this is a regular file
 	FILE *fp = fopen (path, "rb");
+	struct stat st = {};
+	if (fp && !fstat (fileno (fp), &st) && !S_ISREG (st.st_mode))
+	{
+		fclose (fp);
+		fp = NULL;
+	}
 	if (!fp)
 	{
 		struct str response = str_make ();
