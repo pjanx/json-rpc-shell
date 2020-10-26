@@ -86,7 +86,7 @@ install (TARGETS ${PROJECT_NAME} DESTINATION ${CMAKE_INSTALL_BINDIR})
 install (PROGRAMS json-format.pl DESTINATION ${CMAKE_INSTALL_BINDIR})
 install (FILES LICENSE DESTINATION ${CMAKE_INSTALL_DOCDIR})
 
-# Generate documentation from program help
+# Generate documentation from text markup
 find_program (ASCIIDOCTOR_EXECUTABLE asciidoctor)
 if (NOT ASCIIDOCTOR_EXECUTABLE)
 	message (FATAL_ERROR "asciidoctor not found")
