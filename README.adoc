@@ -5,7 +5,7 @@ json-rpc-shell
 'json-rpc-shell' is a shell for running JSON-RPC 2.0 queries.
 
 This software was originally created as a replacement for
-http://software.dzhuvinov.com/json-rpc-2.0-shell.html[a different one] made by
+http://software.dzhuvinov.com/json-rpc-2.0-shell.html[a different shell] made by
 Vladimir Dzhuvinov, in order to avoid Java, but has evolved since.
 
 Features
@@ -57,9 +57,6 @@ Or you can try telling CMake to make a package for you.  For Debian it is:
 
  $ cpack -G DEB
  # dpkg -i json-rpc-shell-*.deb
-
-Note that for versions of CMake before 2.8.9, you need to prefix `cpack` with
-`fakeroot` or file ownership will end up wrong.
 
 Test server
 -----------

@@ -1,5 +1,5 @@
-project (json-rpc-shell C)
-cmake_minimum_required (VERSION 2.8.5)
+cmake_minimum_required (VERSION 3.0)
+project (json-rpc-shell VERSION 1.1.0 LANGUAGES C)
 
 # Options
 option (WANT_READLINE "Use GNU Readline for the UI (better)" ON)
@@ -11,15 +11,6 @@ if ("${CMAKE_C_COMPILER_ID}" MATCHES "GNU" OR CMAKE_COMPILER_IS_GNUCC)
 	set (CMAKE_C_FLAGS
 		"${CMAKE_C_FLAGS} -std=c99 -Wall -Wextra -Wno-unused-function")
 endif ("${CMAKE_C_COMPILER_ID}" MATCHES "GNU" OR CMAKE_COMPILER_IS_GNUCC)
-
-# Version
-set (project_VERSION_MAJOR "1")
-set (project_VERSION_MINOR "1")
-set (project_VERSION_PATCH "0")
-
-set (project_VERSION "${project_VERSION_MAJOR}")
-set (project_VERSION "${project_VERSION}.${project_VERSION_MINOR}")
-set (project_VERSION "${project_VERSION}.${project_VERSION_PATCH}")
 
 # For custom modules
 set (CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
@@ -97,7 +88,7 @@ foreach (page ${PROJECT_NAME})
 	list (APPEND project_MAN_PAGES "${page_output}")
 	add_custom_command (OUTPUT ${page_output}
 		COMMAND ${ASCIIDOCTOR_EXECUTABLE} -b manpage
-			-a release-version=${project_VERSION}
+			-a release-version=${PROJECT_VERSION}
 			"${PROJECT_SOURCE_DIR}/${page}.adoc"
 			-o "${page_output}"
 		DEPENDS ${page}.adoc
@@ -117,15 +108,12 @@ set (CPACK_PACKAGE_DESCRIPTION_SUMMARY "A shell for JSON-RPC 2.0")
 set (CPACK_PACKAGE_VENDOR "Premysl Eric Janouch")
 set (CPACK_PACKAGE_CONTACT "Přemysl Eric Janouch <p@janouch.name>")
 set (CPACK_RESOURCE_FILE_LICENSE "${PROJECT_SOURCE_DIR}/LICENSE")
-set (CPACK_PACKAGE_VERSION_MAJOR ${project_VERSION_MAJOR})
-set (CPACK_PACKAGE_VERSION_MINOR ${project_VERSION_MINOR})
-set (CPACK_PACKAGE_VERSION_PATCH ${project_VERSION_PATCH})
 set (CPACK_GENERATOR "TGZ;ZIP")
 set (CPACK_PACKAGE_FILE_NAME
-	"${PROJECT_NAME}-${project_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
-set (CPACK_PACKAGE_INSTALL_DIRECTORY "${PROJECT_NAME}-${project_VERSION}")
+	"${PROJECT_NAME}-${PROJECT_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+set (CPACK_PACKAGE_INSTALL_DIRECTORY "${PROJECT_NAME}-${PROJECT_VERSION}")
 set (CPACK_SOURCE_GENERATOR "TGZ;ZIP")
 set (CPACK_SOURCE_IGNORE_FILES "/\\\\.git;/build;/CMakeLists.txt.user")
-set (CPACK_SOURCE_PACKAGE_FILE_NAME "${PROJECT_NAME}-${project_VERSION}")
+set (CPACK_SOURCE_PACKAGE_FILE_NAME "${PROJECT_NAME}-${PROJECT_VERSION}")
 
 include (CPack)
