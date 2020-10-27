@@ -96,8 +96,16 @@ Program information
 *--write-default-cfg*[**=**__PATH__]::
 	Write a default configuration file, show its path and exit.
 
+Environment
+-----------
+*VISUAL*, *EDITOR*::
+	The editor program to be launched by the M-e key binding.
+	If neither variable is set, it defaults to *vi*(1).
+
 Files
 -----
+*json-rpc-shell* follows the XDG Base Directory Specification.
+
 _~/.config/json-rpc-shell/json-rpc-shell.conf_::
 	The configuration file, in which you can configure color output and
 	CA certificate paths.  Use the *--write-default-cfg* option to create
