@@ -30,6 +30,18 @@ set (project_libraries ${dependencies_LIBRARIES}
 include_directories (${dependencies_INCLUDE_DIRS}
 	${libssl_INCLUDE_DIRS} ${LIBEV_INCLUDE_DIRS})
 
+# -liconv may or may not be a part of libc
+find_library (iconv_LIBRARIES iconv)
+if (iconv_LIBRARIES)
+	list (APPEND project_libraries ${iconv_LIBRARIES})
+endif ()
+
+if ("${CMAKE_SYSTEM_NAME}" MATCHES "BSD")
+	# Need this for SIGWINCH in FreeBSD and OpenBSD respectively;
+	# our POSIX version macros make it undefined
+	add_definitions (-D__BSD_VISIBLE=1 -D_BSD_SOURCE=1)
+endif ()
+
 if (ncursesw_FOUND)
 	list (APPEND project_libraries ${ncursesw_LIBRARIES})
 	include_directories (${ncursesw_INCLUDE_DIRS})
@@ -43,7 +55,13 @@ endif ()
 if ((WANT_READLINE AND WANT_LIBEDIT) OR (NOT WANT_READLINE AND NOT WANT_LIBEDIT))
 	message (SEND_ERROR "You have to choose either GNU Readline or libedit")
 elseif (WANT_READLINE)
-	list (APPEND project_libraries readline)
+	# OpenBSD's default readline is too old
+	if ("${CMAKE_SYSTEM_NAME}" MATCHES "OpenBSD")
+		include_directories (${OPENBSD_LOCALBASE}/include/ereadline)
+		list (APPEND degesch_libraries ereadline)
+	else ()
+		list (APPEND degesch_libraries readline)
+	endif ()
 elseif (WANT_LIBEDIT)
 	pkg_check_modules (libedit REQUIRED libedit)
 	list (APPEND project_libraries ${libedit_LIBRARIES})
