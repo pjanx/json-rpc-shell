@@ -10,7 +10,7 @@ if ("${CMAKE_C_COMPILER_ID}" MATCHES "GNU" OR CMAKE_COMPILER_IS_GNUCC)
 	# -Wunused-function is pretty annoying here, as everything is static
 	set (CMAKE_C_FLAGS
 		"${CMAKE_C_FLAGS} -std=c99 -Wall -Wextra -Wno-unused-function")
-endif ("${CMAKE_C_COMPILER_ID}" MATCHES "GNU" OR CMAKE_COMPILER_IS_GNUCC)
+endif ()
 
 # For custom modules
 set (CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
@@ -36,9 +36,9 @@ if (ncursesw_FOUND)
 elseif (CURSES_FOUND)
 	list (APPEND project_libraries ${CURSES_LIBRARY})
 	include_directories (${CURSES_INCLUDE_DIR})
-else (CURSES_FOUND)
+else ()
 	message (SEND_ERROR "Curses not found")
-endif (ncursesw_FOUND)
+endif ()
 
 if ((WANT_READLINE AND WANT_LIBEDIT) OR (NOT WANT_READLINE AND NOT WANT_LIBEDIT))
 	message (SEND_ERROR "You have to choose either GNU Readline or libedit")
@@ -48,7 +48,7 @@ elseif (WANT_LIBEDIT)
 	pkg_check_modules (libedit REQUIRED libedit)
 	list (APPEND project_libraries ${libedit_LIBRARIES})
 	include_directories (${libedit_INCLUDE_DIRS})
-endif ((WANT_READLINE AND WANT_LIBEDIT) OR (NOT WANT_READLINE AND NOT WANT_LIBEDIT))
+endif ()
 
 # Generate a configuration file
 set (HAVE_READLINE "${WANT_READLINE}")
@@ -81,7 +81,7 @@ install (FILES LICENSE DESTINATION ${CMAKE_INSTALL_DOCDIR})
 find_program (ASCIIDOCTOR_EXECUTABLE asciidoctor)
 if (NOT ASCIIDOCTOR_EXECUTABLE)
 	message (FATAL_ERROR "asciidoctor not found")
-endif (NOT ASCIIDOCTOR_EXECUTABLE)
+endif ()
 
 foreach (page ${PROJECT_NAME})
 	set (page_output "${PROJECT_BINARY_DIR}/${page}.1")
@@ -93,7 +93,7 @@ foreach (page ${PROJECT_NAME})
 			-o "${page_output}"
 		DEPENDS ${page}.adoc
 		COMMENT "Generating man page for ${page}" VERBATIM)
-endforeach (page)
+endforeach ()
 
 add_custom_target (docs ALL DEPENDS ${project_MAN_PAGES})
 
@@ -101,7 +101,7 @@ foreach (page ${project_MAN_PAGES})
 	string (REGEX MATCH "\\.([0-9])$" manpage_suffix "${page}")
 	install (FILES "${page}"
 		DESTINATION "${CMAKE_INSTALL_MANDIR}/man${CMAKE_MATCH_1}")
-endforeach (page)
+endforeach ()
 
 # CPack
 set (CPACK_PACKAGE_DESCRIPTION_SUMMARY "A shell for JSON-RPC 2.0")
