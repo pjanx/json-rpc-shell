@@ -1425,7 +1425,7 @@ init_colors (struct app_context *ctx)
 		g_terminal.stderr_is_tty = true;
 		break;
 	case COLOR_AUTO:
-		if (!g_terminal.initialized)
+		if (!g_terminal.initialized || getenv ("NO_COLOR"))
 		{
 	case COLOR_NEVER:
 			g_terminal.stdout_is_tty = false;
