@@ -3670,7 +3670,7 @@ complete_method_name (const char *text, int state)
 // --- Main program ------------------------------------------------------------
 
 // The ability to use an external editor on the input line has been shamelessly
-// copypasted from degesch with minor changes only.
+// copypasted from xC with minor changes only.
 
 static bool
 dump_line_to_file (const char *line, char *template, struct error **e)
