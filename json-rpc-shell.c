@@ -535,22 +535,12 @@ input_el_wcstombs (const wchar_t *s)
 	return mb;
 }
 
-static int
-input_el_get_termios (int character, int fallback)
-{
-	if (!g_terminal.initialized)
-		return fallback;
-
-	cc_t value = g_terminal.termios.c_cc[character];
-	if (value == _POSIX_VDISABLE)
-		return fallback;
-	return value;
-}
-
 static void
 input_el_redisplay (struct input_el *self)
 {
-	char x[] = { input_el_get_termios (VREPRINT, 'R' - 0x40), 0 };
+	// See rl_redisplay(), however NetBSD editline's map.c v1.54 breaks VREPRINT
+	// so we bind redisplay somewhere else in input_el_start()
+	char x[] = { 'q' & 31, 0 };
 	el_push (self->editline, x);
 
 	// We have to do this or it gets stuck and nothing is done
@@ -683,6 +673,8 @@ input_el_start (struct input *input, const char *program_name)
 	el_set (self->editline, EL_BIND, "^w", "ed-delete-prev-word", NULL);
 	// Just what are you doing?
 	el_set (self->editline, EL_BIND, "^u", "vi-kill-line-prev",   NULL);
+	// See input_el_redisplay(), functionally important
+	el_set (self->editline, EL_BIND, "^q", "ed-redisplay",        NULL);
 
 	// It's probably better to handle these ourselves
 	input_el_addbind (self->editline, "send-line", "Send line",
