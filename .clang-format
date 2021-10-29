@@ -1,0 +1,33 @@
+# clang-format is fairly limited, and these rules are approximate:
+#  - array initializers can get terribly mangled with clang-format 12.0,
+#  - sometimes it still aligns with space characters,
+#  - EV_DEFAULT_ and EV_A_ are always taken as identifiers,
+#  - struct name NL { NL ... NL } NL name; is unachievable.
+BasedOnStyle: GNU
+ColumnLimit: 80
+IndentWidth: 4
+TabWidth: 4
+UseTab: ForContinuationAndIndentation
+BreakBeforeBraces: Allman
+SpaceAfterCStyleCast: true
+AlignAfterOpenBracket: DontAlign
+AlignOperands: DontAlign
+AlignConsecutiveMacros: Consecutive
+AllowAllArgumentsOnNextLine: false
+AllowAllParametersOfDeclarationOnNextLine: false
+IndentGotoLabels: false
+
+# IncludeCategories has some potential, but it may also break the build.
+# Note that the documentation says the value should be "Never".
+SortIncludes: false
+
+# This is a compromise, it generally works out aesthetically better.
+BinPackArguments: false
+
+# Unfortunately, this can't be told to align to column 40 or so.
+SpacesBeforeTrailingComments: 2
+
+# liberty-specific macro body wrappers.
+MacroBlockBegin: "BLOCK_START"
+MacroBlockEnd: "BLOCK_END"
+ForEachMacros: ["LIST_FOR_EACH"]
