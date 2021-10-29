@@ -26,9 +26,9 @@ find_package (LibEV REQUIRED)
 pkg_check_modules (ncursesw ncursesw)
 
 set (project_libraries ${dependencies_LIBRARIES}
-	${libssl_LIBRARIES} ${LIBEV_LIBRARIES})
+	${libssl_LIBRARIES} ${LibEV_LIBRARIES})
 include_directories (${dependencies_INCLUDE_DIRS}
-	${libssl_INCLUDE_DIRS} ${LIBEV_INCLUDE_DIRS})
+	${libssl_INCLUDE_DIRS} ${LibEV_INCLUDE_DIRS})
 
 # -liconv may or may not be a part of libc
 find_library (iconv_LIBRARIES iconv)
