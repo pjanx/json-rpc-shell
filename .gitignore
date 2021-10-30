@@ -7,3 +7,5 @@
 /json-rpc-shell.files
 /json-rpc-shell.creator*
 /json-rpc-shell.includes
+/json-rpc-shell.cflags
+/json-rpc-shell.cxxflags
