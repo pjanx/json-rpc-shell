@@ -34,7 +34,7 @@ a package with the latest development version from Archlinux's AUR.
 
 Building
 --------
-Build dependencies: CMake, pkg-config, asciidoctor,
+Build dependencies: CMake, pkg-config, asciidoctor or asciidoc,
                     liberty (included), http-parser (included) +
 Runtime dependencies: libev, Jansson, cURL, openssl,
                       readline or libedit >= 2013-07-12,

@@ -97,20 +97,31 @@ install (FILES LICENSE DESTINATION ${CMAKE_INSTALL_DOCDIR})
 
 # Generate documentation from text markup
 find_program (ASCIIDOCTOR_EXECUTABLE asciidoctor)
-if (NOT ASCIIDOCTOR_EXECUTABLE)
-	message (FATAL_ERROR "asciidoctor not found")
+find_program (A2X_EXECUTABLE a2x)
+if (NOT ASCIIDOCTOR_EXECUTABLE AND NOT A2X_EXECUTABLE)
+	message (FATAL_ERROR "Neither asciidoctor nor a2x were found")
 endif ()
 
 foreach (page ${PROJECT_NAME})
 	set (page_output "${PROJECT_BINARY_DIR}/${page}.1")
 	list (APPEND project_MAN_PAGES "${page_output}")
-	add_custom_command (OUTPUT ${page_output}
-		COMMAND ${ASCIIDOCTOR_EXECUTABLE} -b manpage
-			-a release-version=${PROJECT_VERSION}
-			"${PROJECT_SOURCE_DIR}/${page}.adoc"
-			-o "${page_output}"
-		DEPENDS ${page}.adoc
-		COMMENT "Generating man page for ${page}" VERBATIM)
+	if (ASCIIDOCTOR_EXECUTABLE)
+		add_custom_command (OUTPUT ${page_output}
+			COMMAND ${ASCIIDOCTOR_EXECUTABLE} -b manpage
+				-a release-version=${PROJECT_VERSION}
+				-o "${page_output}"
+				"${PROJECT_SOURCE_DIR}/${page}.adoc"
+			DEPENDS ${page}.adoc
+			COMMENT "Generating man page for ${page}" VERBATIM)
+	elseif (A2X_EXECUTABLE)
+		add_custom_command (OUTPUT ${page_output}
+			COMMAND ${A2X_EXECUTABLE} --doctype manpage --format manpage
+				-a release-version=${PROJECT_VERSION}
+				-D "${PROJECT_BINARY_DIR}"
+				"${PROJECT_SOURCE_DIR}/${page}.adoc"
+			DEPENDS ${page}.adoc
+			COMMENT "Generating man page for ${page}" VERBATIM)
+	endif ()
 endforeach ()
 
 add_custom_target (docs ALL DEPENDS ${project_MAN_PAGES})
