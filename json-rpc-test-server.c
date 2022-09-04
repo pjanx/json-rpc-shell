@@ -1,7 +1,7 @@
 /*
  * json-rpc-test-server.c: JSON-RPC 2.0 demo server
  *
- * Copyright (c) 2015 - 2020, Přemysl Eric Janouch <p@janouch.name>
+ * Copyright (c) 2015 - 2022, Přemysl Eric Janouch <p@janouch.name>
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted.
@@ -1464,7 +1464,7 @@ json_rpc_discover (struct server_context *ctx, json_t *params)
 
 	json_t *info = json_pack ("{ssss}",
 		"title", PROGRAM_NAME, "version", PROGRAM_VERSION);
-	json_t *methods = json_pack ("[ooo]",
+	json_t *methods = json_pack ("[oooo]",
 		open_rpc_describe ("date", json_pack ("{ssso}", "type", "object",
 			"properties", json_pack ("{s{ss}s{ss}s{ss}s{ss}s{ss}s{ss}}",
 				"year",    "type", "number",
@@ -1475,7 +1475,8 @@ json_rpc_discover (struct server_context *ctx, json_t *params)
 				"seconds", "type", "number"))),
 		open_rpc_describe ("ping", json_pack ("{ss}", "type", "string")),
 		open_rpc_describe ("rpc.discover", json_pack ("{ss}", "$ref",
-			"https://github.com/open-rpc/meta-schema/raw/master/schema.json")));
+			"https://github.com/open-rpc/meta-schema/raw/master/schema.json")),
+		open_rpc_describe ("wait", json_pack ("{ss}", "type", "null")));
 	return json_rpc_response (NULL, json_pack ("{sssoso}",
 		"openrpc", "1.2.6", "info", info, "methods", methods), NULL);
 }
@@ -1490,6 +1491,16 @@ json_rpc_ping (struct server_context *ctx, json_t *params)
 			json_rpc_error (JSON_RPC_ERROR_INVALID_PARAMS, NULL));
 
 	return json_rpc_response (NULL, json_string ("pong"), NULL);
+}
+
+static json_t *
+json_rpc_wait (struct server_context *ctx, json_t *params)
+{
+	(void) ctx;
+	(void) params;
+
+	sleep (1);
+	return json_rpc_response (NULL, json_null (), NULL);
 }
 
 static json_t *
@@ -1524,6 +1535,7 @@ process_json_rpc_request (struct server_context *ctx, json_t *request)
 		{ "date",         json_rpc_date     },
 		{ "ping",         json_rpc_ping     },
 		{ "rpc.discover", json_rpc_discover },
+		{ "wait",         json_rpc_wait     },
 	};
 
 	if (!json_is_object (request))
