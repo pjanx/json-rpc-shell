@@ -39,10 +39,6 @@ Build dependencies: CMake, pkg-config, asciidoctor or asciidoc,
 Runtime dependencies: libev, Jansson, cURL, openssl,
                       readline or libedit >= 2013-07-12,
 
-Avoid libedit if you can, in general it works but at the moment history is
-acting up and I have no clue about fixing it.  Multiline editing is also
-misbehaving there.
-
  $ git clone --recursive https://git.janouch.name/p/json-rpc-shell.git
  $ mkdir json-rpc-shell/build
  $ cd json-rpc-shell/build
