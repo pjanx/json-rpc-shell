@@ -140,8 +140,7 @@ the higher-level protocol (the "Sec-Ws-Protocol" HTTP field).
 
 Bugs
 ----
-The editline (libedit) frontend is more of a proof of concept that mostly seems
-to work but exhibits bugs that are not our fault.
+The editline (libedit) frontend may exhibit some unexpected behaviour.
 
 Examples
 --------

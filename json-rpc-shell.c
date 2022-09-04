@@ -1,7 +1,7 @@
 /*
  * json-rpc-shell.c: a shell for JSON-RPC 2.0
  *
- * Copyright (c) 2014 - 2020, Přemysl Eric Janouch <p@janouch.name>
+ * Copyright (c) 2014 - 2022, Přemysl Eric Janouch <p@janouch.name>
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted.
@@ -515,6 +515,7 @@ struct input_el
 	char *entered_line;                 ///< Buffers the entered line
 
 	bool active;                        ///< Interface has been started
+	bool need_restart;                  ///< Need to clear history state
 	char *prompt;                       ///< The prompt we use
 	int prompt_shown;                   ///< Whether the prompt is shown now
 
@@ -540,12 +541,24 @@ input_el_redisplay (struct input_el *self)
 {
 	// See rl_redisplay(), however NetBSD editline's map.c v1.54 breaks VREPRINT
 	// so we bind redisplay somewhere else in input_el_start()
-	char x[] = { 'q' & 31, 0 };
-	el_push (self->editline, x);
+	wchar_t x[] = { L'q' & 31, 0 };
+	el_wpush (self->editline, x);
 
 	// We have to do this or it gets stuck and nothing is done
-	int count = 0;
-	(void) el_wgets (self->editline, &count);
+	int dummy_count = 0;
+	(void) el_wgets (self->editline, &dummy_count);
+}
+
+// Editline keeping its own history position (look for "eventno" there).
+// This is the only sane way of resetting it.
+static void
+input_el_start_over (struct input_el *self)
+{
+	wchar_t x[] = { L'c' & 31, 0 };
+	el_wpush (self->editline, x);
+
+	int dummy_count = 0;
+	(void) el_wgets (self->editline, &dummy_count);
 }
 
 static char *
@@ -603,13 +616,14 @@ input_el_on_return (EditLine *editline, int key)
 	self->entered_line = xstrndup
 		(info_mb->buffer, info_mb->lastchar - info_mb->buffer);
 
-	// Now we need to force editline to actually print the newline
+	// Now we need to force editline into actually printing the newline
 	el_cursor (editline, len++ - point);
 	el_insertstr (editline, "\n");
 	input_el_redisplay (self);
 
 	// Finally we need to discard the old line's contents
 	el_wdeletestr (editline, len);
+	self->need_restart = true;
 	return CC_NEWLINE;
 }
 
@@ -673,8 +687,6 @@ input_el_start (struct input *input, const char *program_name)
 	el_set (self->editline, EL_BIND, "^w", "ed-delete-prev-word", NULL);
 	// Just what are you doing?
 	el_set (self->editline, EL_BIND, "^u", "vi-kill-line-prev",   NULL);
-	// See input_el_redisplay(), functionally important
-	el_set (self->editline, EL_BIND, "^q", "ed-redisplay",        NULL);
 
 	// It's probably better to handle these ourselves
 	input_el_addbind (self->editline, "send-line", "Send line",
@@ -689,6 +701,11 @@ input_el_start (struct input *input, const char *program_name)
 
 	// Source the user's defaults file
 	el_source (self->editline, NULL);
+
+	// See input_el_redisplay(), functionally important
+	el_set (self->editline, EL_BIND, "^q", "ed-redisplay",        NULL);
+	// This is what buffered el_wgets() does, functionally important
+	el_set (self->editline, EL_BIND, "^c", "ed-start-over",       NULL);
 
 	self->active = true;
 	self->prompt_shown = 1;
@@ -977,6 +994,16 @@ input_el_on_tty_readable (struct input *input)
 	// We bind the return key to process it how we need to
 	struct input_el *self = (struct input_el *) input;
 
+	int unbuffered = 0;
+	(void) el_get (self->editline, EL_UNBUFFERED, &unbuffered);
+
+	// We must invoke ch_reset(), which isn't done for us with EL_UNBUFFERED.
+	if (unbuffered && self->need_restart)
+	{
+		self->need_restart = false;
+		input_el_start_over (self);
+	}
+
 	// el_gets() with EL_UNBUFFERED doesn't work with UTF-8,
 	// we must use the wide-character interface
 	int count = 0;
@@ -984,8 +1011,7 @@ input_el_on_tty_readable (struct input *input)
 
 	// Editline works in a funny NO_TTY mode when the input is not a tty,
 	// we cannot use EL_UNBUFFERED and expect sane results then
-	int unbuffered = 0;
-	if (!el_get (self->editline, EL_UNBUFFERED, &unbuffered) && !unbuffered)
+	if (!unbuffered)
 	{
 		char *entered_line = buf ? input_el_wcstombs (buf) : NULL;
 		self->super.on_input (entered_line, self->super.user_data);
