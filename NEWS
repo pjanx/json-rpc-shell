@@ -1,3 +1,20 @@
+Unreleased
+
+ * Add a backend for co-processes, such as language servers
+
+ * Support reading OpenRPC documents from a file
+
+ * Respect the NO_COLOR environment variable
+
+ * Miscellaneous libedit (editline) fixes
+
+ * json-rpc-test-server: implement OpenRPC discovery
+
+ * json-rpc-test-server: only serve regular files
+
+ * json-rpc-test-server: miscellaneous WebSocket fixes
+
+
 1.1.0 (2020-10-13)
 
  * Add method name tab completion using OpenRPC information
