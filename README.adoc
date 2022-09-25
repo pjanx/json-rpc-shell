@@ -34,10 +34,10 @@ a package with the latest development version from Archlinux's AUR.
 
 Building
 --------
-Build dependencies: CMake, pkg-config, asciidoctor or asciidoc,
-                    liberty (included), http-parser (included) +
-Runtime dependencies: libev, Jansson, cURL, openssl,
-                      readline or libedit >= 2013-07-12,
+Build dependencies: CMake, pkg-config, liberty (included),
+ http-parser (included), asciidoctor or asciidoc (recommended but optional) +
+Runtime dependencies:
+ libev, Jansson, cURL, openssl, readline or libedit >= 2013-07-12
 
  $ git clone --recursive https://git.janouch.name/p/json-rpc-shell.git
  $ mkdir json-rpc-shell/build
