@@ -14,8 +14,9 @@ Synopsis
 
 Description
 -----------
+:colon: :
 The _ENDPOINT_ must be either an HTTP or a WebSocket URL, with or without TLS
-(i.e. one of the _+++http+++://_, _+++https+++://_, _ws://_, _wss://_ schemas).
+(i.e. one of the _http{colon}//_, _https{colon}//_, _ws://_, _wss://_ schemas).
 
 *json-rpc-shell* will use it to send any JSON-RPC 2.0 requests you enter on its
 command line. The server's response will be parsed and validated, stripping it
