@@ -125,8 +125,9 @@ foreach (page ${PROJECT_NAME})
 	else ()
 		set (ASCIIMAN ${PROJECT_SOURCE_DIR}/liberty/tools/asciiman.awk)
 		add_custom_command (OUTPUT ${page_output}
-			COMMAND env LC_ALL=C awk -f ${ASCIIMAN}
-				"${PROJECT_SOURCE_DIR}/${page}.adoc" > ${page_output}
+			COMMAND env LC_ALL=C asciidoc-release-version=${PROJECT_VERSION}
+				awk -f ${ASCIIMAN} "${PROJECT_SOURCE_DIR}/${page}.adoc"
+				> ${page_output}
 			DEPENDS ${page}.adoc ${ASCIIMAN}
 			COMMENT "Generating man page for ${page}" VERBATIM)
 	endif ()
