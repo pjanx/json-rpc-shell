@@ -29,8 +29,10 @@ The rest of this README will concern itself with externalities.
 
 Packages
 --------
-Regular releases are sporadic.  git master should be stable enough.  You can get
-a package with the latest development version from Archlinux's AUR.
+Regular releases are sporadic.  git master should be stable enough.
+You can get a package with the latest development version using Arch Linux's
+https://aur.archlinux.org/packages/json-rpc-shell-git[AUR],
+or as a https://git.janouch.name/p/nixexprs[Nix derivation].
 
 Building
 --------
