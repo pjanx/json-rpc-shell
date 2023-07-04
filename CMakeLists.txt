@@ -18,17 +18,15 @@ set (CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 # Dependencies
 find_package (Curses)
 find_package (PkgConfig REQUIRED)
-pkg_check_modules (dependencies REQUIRED libcurl jansson)
 # Note that cURL can link to a different version of libssl than we do,
 # in which case the results are undefined
-pkg_check_modules (libssl REQUIRED libssl libcrypto)
+pkg_check_modules (dependencies REQUIRED libcurl jansson libssl libcrypto)
 find_package (LibEV REQUIRED)
 pkg_check_modules (ncursesw ncursesw)
 
-set (project_libraries ${dependencies_LIBRARIES}
-	${libssl_LIBRARIES} ${LibEV_LIBRARIES})
-include_directories (${dependencies_INCLUDE_DIRS}
-	${libssl_INCLUDE_DIRS} ${LibEV_INCLUDE_DIRS})
+set (project_libraries ${dependencies_LIBRARIES} ${LibEV_LIBRARIES})
+include_directories (${dependencies_INCLUDE_DIRS} ${LibEV_INCLUDE_DIRS})
+link_directories (${dependencies_LIBRARY_DIRS})
 
 # -liconv may or may not be a part of libc
 find_library (iconv_LIBRARIES iconv)
@@ -47,6 +45,7 @@ endif ()
 if (ncursesw_FOUND)
 	list (APPEND project_libraries ${ncursesw_LIBRARIES})
 	include_directories (${ncursesw_INCLUDE_DIRS})
+	link_directories (${ncursesw_LIBRARY_DIRS})
 elseif (CURSES_FOUND)
 	list (APPEND project_libraries ${CURSES_LIBRARY})
 	include_directories (${CURSES_INCLUDE_DIR})
