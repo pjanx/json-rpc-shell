@@ -13,16 +13,17 @@ if ("${CMAKE_C_COMPILER_ID}" MATCHES "GNU" OR CMAKE_COMPILER_IS_GNUCC)
 endif ()
 
 # For custom modules
-set (CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
+set (CMAKE_MODULE_PATH
+	"${PROJECT_SOURCE_DIR}/cmake;${PROJECT_SOURCE_DIR}/liberty/cmake")
 
 # Dependencies
 find_package (Curses)
+find_package (Ncursesw)
 find_package (PkgConfig REQUIRED)
 # Note that cURL can link to a different version of libssl than we do,
 # in which case the results are undefined
 pkg_check_modules (dependencies REQUIRED libcurl jansson libssl libcrypto)
 find_package (LibEV REQUIRED)
-pkg_check_modules (ncursesw ncursesw)
 
 set (project_libraries ${dependencies_LIBRARIES} ${LibEV_LIBRARIES})
 include_directories (${dependencies_INCLUDE_DIRS} ${LibEV_INCLUDE_DIRS})
@@ -42,10 +43,10 @@ elseif (APPLE)
 	add_definitions (-D_DARWIN_C_SOURCE)
 endif ()
 
-if (ncursesw_FOUND)
-	list (APPEND project_libraries ${ncursesw_LIBRARIES})
-	include_directories (${ncursesw_INCLUDE_DIRS})
-	link_directories (${ncursesw_LIBRARY_DIRS})
+if (Ncursesw_FOUND)
+	list (APPEND project_libraries ${Ncursesw_LIBRARIES})
+	include_directories (${Ncursesw_INCLUDE_DIRS})
+	link_directories (${Ncursesw_LIBRARY_DIRS})
 elseif (CURSES_FOUND)
 	list (APPEND project_libraries ${CURSES_LIBRARY})
 	include_directories (${CURSES_INCLUDE_DIR})
