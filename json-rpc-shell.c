@@ -601,7 +601,7 @@ input_el_on_return (EditLine *editline, int key)
 	int len = info->lastchar - info->buffer;
 	int point = info->cursor - info->buffer;
 
-	wchar_t *line = calloc (sizeof *info->buffer, len + 1);
+	wchar_t *line = xcalloc (len + 1, sizeof *info->buffer);
 	memcpy (line, info->buffer, sizeof *info->buffer * len);
 
 	if (*line)
@@ -762,7 +762,7 @@ input_el_hide (struct input *input)
 	int len = info->lastchar - info->buffer;
 	int point = info->cursor - info->buffer;
 
-	wchar_t *line = calloc (sizeof *info->buffer, len + 1);
+	wchar_t *line = xcalloc (len + 1, sizeof *info->buffer);
 	memcpy (line, info->buffer, sizeof *info->buffer * len);
 	el_cursor (self->editline, len - point);
 	el_wdeletestr (self->editline, len);
@@ -1225,7 +1225,7 @@ await_try_cancel (struct app_context *ctx)
 
 static void on_config_attribute_change (struct config_item *item);
 
-static struct config_schema g_config_connection[] =
+static const struct config_schema g_config_connection[] =
 {
 	{ .name      = "tls_ca_file",
 	  .comment   = "OpenSSL CA bundle file",
@@ -1236,7 +1236,7 @@ static struct config_schema g_config_connection[] =
 	{}
 };
 
-static struct config_schema g_config_attributes[] =
+static const struct config_schema g_config_attributes[] =
 {
 #define XX(x, y, z) { .name = y, .comment = z, .type = CONFIG_ITEM_STRING, \
 	.on_change = on_config_attribute_change },
