@@ -7,5 +7,7 @@
 #cmakedefine HAVE_READLINE
 #cmakedefine HAVE_EDITLINE
 
+#cmakedefine01 ICONV_ACCEPTS_TRANSLIT
+
 #endif  // ! CONFIG_H
 

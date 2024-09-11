@@ -4076,11 +4076,10 @@ main (int argc, char *argv[])
 	setlocale (LC_CTYPE, "");
 
 	char *encoding = nl_langinfo (CODESET);
-#ifdef __linux__
 	// XXX: not quite sure if this is actually desirable
 	// TODO: instead retry with JSON_ENSURE_ASCII
-	encoding = xstrdup_printf ("%s//TRANSLIT", encoding);
-#endif // __linux__
+	if (ICONV_ACCEPTS_TRANSLIT)
+		encoding = xstrdup_printf ("%s//TRANSLIT", encoding);
 
 	if ((g_ctx.term_from_utf8 = iconv_open (encoding, "UTF-8"))
 		== (iconv_t) -1

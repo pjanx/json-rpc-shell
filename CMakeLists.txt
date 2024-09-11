@@ -29,12 +29,6 @@ set (project_libraries ${dependencies_LIBRARIES} ${LibEV_LIBRARIES})
 include_directories (${dependencies_INCLUDE_DIRS} ${LibEV_INCLUDE_DIRS})
 link_directories (${dependencies_LIBRARY_DIRS})
 
-# -liconv may or may not be a part of libc
-find_library (iconv_LIBRARIES iconv)
-if (iconv_LIBRARIES)
-	list (APPEND project_libraries ${iconv_LIBRARIES})
-endif ()
-
 if ("${CMAKE_SYSTEM_NAME}" MATCHES "BSD")
 	# Need this for SIGWINCH in FreeBSD and OpenBSD respectively;
 	# our POSIX version macros make it undefined
@@ -42,6 +36,20 @@ if ("${CMAKE_SYSTEM_NAME}" MATCHES "BSD")
 elseif (APPLE)
 	add_definitions (-D_DARWIN_C_SOURCE)
 endif ()
+
+# -liconv may or may not be a part of libc
+find_library (iconv_LIBRARIES iconv)
+if (iconv_LIBRARIES)
+	list (APPEND project_libraries ${iconv_LIBRARIES})
+endif ()
+
+include (CheckCSourceRuns)
+set (CMAKE_REQUIRED_LIBRARIES ${project_libraries})
+get_property (CMAKE_REQUIRED_INCLUDES
+	DIRECTORY "${PROJECT_SOURCE_DIR}" PROPERTY INCLUDE_DIRECTORIES)
+CHECK_C_SOURCE_RUNS ("#include <iconv.h>
+	int main () { return iconv_open (\"UTF-8//TRANSLIT\", \"ISO-8859-1\")
+		== (iconv_t) -1; }" ICONV_ACCEPTS_TRANSLIT)
 
 if (Ncursesw_FOUND)
 	list (APPEND project_libraries ${Ncursesw_LIBRARIES})
